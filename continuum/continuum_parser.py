@@ -21,19 +21,16 @@ def clear_screen():
 def find_stellaris_user_dir():
     """Finds the Stellaris user documents directory by querying the OS directly."""
     if sys.platform == "win32":
-        # More robust method using "User Shell Folders" which handles OneDrive redirection
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as key:
                 doc_path = winreg.QueryValueEx(key, "Personal")[0]
-            # Paths from this key can have environment variables like %USERPROFILE%
             doc_path = os.path.expandvars(doc_path)
             stellaris_dir = os.path.join(doc_path, 'Paradox Interactive', 'Stellaris')
             if os.path.isdir(stellaris_dir):
                 return stellaris_dir
         except Exception:
-            pass  # Silently fail and try the next method
+            pass
 
-        # Original method as a fallback
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders") as key:
                 doc_path = winreg.QueryValueEx(key, "Personal")[0]
@@ -43,7 +40,6 @@ def find_stellaris_user_dir():
         except Exception:
             print("Warning: Could not query Windows Registry for Documents path. Using standard fallback.")
 
-        # Final fallback for non-standard setups
         doc_path = os.path.join(os.path.expanduser('~'), 'Documents')
         return os.path.join(doc_path, 'Paradox Interactive', 'Stellaris')
 
@@ -75,7 +71,7 @@ def find_stellaris_install_dir():
     if not os.path.exists(library_folders_file): return None
     library_paths = [os.path.join(steam_path)]
     try:
-        with open(library_folders_file, 'r') as f:
+        with open(library_folders_file, 'r', encoding='utf-8') as f:
             for line in f:
                 match = re.search(r'"path"\s+"([^"]+)"', line)
                 if match: library_paths.append(match.group(1).replace('\\\\', '\\'))
@@ -86,10 +82,104 @@ def find_stellaris_install_dir():
         if os.path.isdir(stellaris_path): return stellaris_path
     return None
 
+def find_mod_and_game_files(install_dir, user_dir, sub_path):
+    paths_to_scan = []
+    paths_to_scan.append(os.path.join(install_dir, sub_path))
+    paths_to_scan.append(os.path.join(user_dir, 'mod'))
+    workshop_path = os.path.abspath(os.path.join(install_dir, '..', '..', 'workshop', 'content', '281990'))
+    if os.path.isdir(workshop_path):
+        paths_to_scan.append(workshop_path)
+
+    found_files = []
+    for path in paths_to_scan:
+        if not os.path.isdir(path): continue
+        scan_target = os.path.join(path, sub_path) if sub_path not in path else path
+        for root, _, files in os.walk(scan_target):
+            for file in files:
+                if file.endswith('.txt') or file.endswith('.dds'):
+                    found_files.append(os.path.join(root, file))
+    return found_files
+
+def _get_nested_block_content(text, start_regex, start_index=0):
+    match = re.search(start_regex, text[start_index:])
+    if not match: return None, -1, -1
+
+    search_start = start_index + match.start()
+    
+    try:
+        content_start_index = text.index('{', search_start) + 1
+    except ValueError:
+        return None, -1, -1
+
+    brace_level = 1
+    for i in range(content_start_index, len(text)):
+        char = text[i]
+        if char == '{': brace_level += 1
+        elif char == '}': brace_level -= 1
+        if brace_level == 0:
+            return text[content_start_index:i], search_start, i + 1
+    return None, -1, -1
+
+def parse_all_megastructures(file_list):
+    definitions = {}
+    var_pattern = re.compile(r"^\s*@([\w_]+)\s*=\s*([-\d.]+)", re.MULTILINE)
+    
+    for file_path in file_list:
+        try:
+            with open(file_path, 'r', encoding='utf-8-sig') as f:
+                content = f.read()
+                
+                local_vars = {f"@{m.group(1)}": m.group(2) for m in var_pattern.finditer(content)}
+                
+                brace_level = 0
+                in_comment = False
+                current_key = None
+                block_start = 0
+                
+                for i, char in enumerate(content):
+                    if char == '#': in_comment = True
+                    elif char == '\n': in_comment = False
+                    if in_comment: continue
+
+                    if char == '{':
+                        if brace_level == 0:
+                            key_match = re.search(r'([\w_]+)\s*=\s*$', content[:i])
+                            if key_match:
+                                current_key = key_match.group(1)
+                                block_start = i + 1
+                        brace_level += 1
+                    elif char == '}':
+                        brace_level -= 1
+                        if brace_level == 0 and current_key:
+                            block_content = content[block_start:i]
+
+                            for var, val in local_vars.items():
+                                block_content = block_content.replace(var, val)
+
+                            star_flags = []
+                            country_flags = []
+                            
+                            on_complete_content, _, _ = _get_nested_block_content(block_content, r'on_build_complete\s*=\s*{')
+                            if on_complete_content:
+                                star_flags.extend(re.findall(r'set_star_flag\s*=\s*([\w_]+)', on_complete_content))
+                                
+                                from_block_content, _, _ = _get_nested_block_content(on_complete_content, r'(?:from|owner)\s*=\s*{')
+                                if from_block_content:
+                                    country_flags.extend(re.findall(r'set_country_flag\s*=\s*([\w_]+)', from_block_content))
+
+                            definitions[current_key] = {
+                                'content': block_content,
+                                'star_flags': list(set(star_flags)), 
+                                'country_flags': list(set(country_flags))
+                            }
+                            current_key = None
+        except Exception as e:
+            print(f"Warning: Could not read or parse {file_path}: {e}")
+    print(f"Parsed {len(definitions)} megastructure definitions from game and mod files.")
+    return definitions
+
 def get_save_meta_data(save_file_path):
-    """Reads the version and date from the meta file inside a .sav archive."""
-    version = "Unknown"
-    date = "Unknown Date"
+    version = "Unknown"; date = "Unknown Date"
     try:
         with zipfile.ZipFile(save_file_path, 'r') as save_zip:
             if 'meta' in save_zip.namelist():
@@ -119,7 +209,7 @@ def get_stellaris_language(user_dir):
 def load_localization_data(install_dir, language):
     localization_map = {}
     base_loc_path = os.path.join(install_dir, 'localisation', language)
-    print(f"Searching for all localization files in:\n{base_loc_path}\n")
+    print(f"\nSearching for all localization files in:\n{base_loc_path}\n")
     if not os.path.isdir(base_loc_path): return {}
     loc_pattern = re.compile(r'([\w_.-]+):\d*\s*"(.*?)"')
     for root, _, files in os.walk(base_loc_path):
@@ -139,6 +229,14 @@ def load_localization_data(install_dir, language):
 
 def resolve_name(name_block_content, loc_data, star_count_context=None, parent_body_name=None):
     if not name_block_content: return "Unknown"
+    
+    if 'key="HABITAT_PLANET_NAME"' in name_block_content and 'key="FROM.from.solar_system.GetName"' in name_block_content:
+        system_name_match = re.search(r'key="FROM\.from\.solar_system\.GetName"\s*value\s*=\s*{\s*key="([^"]+)"', name_block_content)
+        if system_name_match:
+            system_name = system_name_match.group(1)
+            resolved_system_name = loc_data.get(system_name, system_name.replace('_', ' '))
+            return f"{resolved_system_name} Habitat Complex"
+
     key_match = re.search(r'^\s*key="([^"]+)"', name_block_content)
     if not key_match:
         key_match_simple = re.search(r'key="([^"]+)"', name_block_content)
@@ -148,10 +246,10 @@ def resolve_name(name_block_content, loc_data, star_count_context=None, parent_b
         name_key = key_match.group(1)
 
     if name_key.startswith('$') and name_key.endswith('$'): name_key = name_key.strip('$')
-    variables_content = _get_nested_block_content(name_block_content, r'variables\s*=\s*{')
+    variables_content,_,_ = _get_nested_block_content(name_block_content, r'variables\s*=\s*{')
     if (name_key.startswith("STAR_NAME_") or name_key.endswith("_NAME_FORMAT") or name_key.startswith("NEW_COLONY_NAME")) and variables_content:
         if name_key.startswith("STAR_NAME_") or name_key.startswith("NEW_COLONY_NAME"):
-            name_value_block = _get_nested_block_content(variables_content, r'key="NAME"\s*value\s*=\s*{')
+            name_value_block,_,_ = _get_nested_block_content(variables_content, r'key="NAME"\s*value\s*=\s*{')
             if name_value_block:
                 base_name = resolve_name(name_value_block, loc_data, star_count_context)
                 if name_key.startswith("NEW_COLONY_NAME"): return f"{base_name} Prime"
@@ -162,15 +260,15 @@ def resolve_name(name_block_content, loc_data, star_count_context=None, parent_b
                 return base_name
             return "Unknown Star"
         if name_key == "PLANET_NAME_FORMAT":
-            parent_value_block = _get_nested_block_content(variables_content, r'key="PARENT"\s*value\s*=\s*{')
-            numeral_value_block = _get_nested_block_content(variables_content, r'key="NUMERAL"\s*value\s*=\s*{')
+            parent_value_block,_,_ = _get_nested_block_content(variables_content, r'key="PARENT"\s*value\s*=\s*{')
+            numeral_value_block,_,_ = _get_nested_block_content(variables_content, r'key="NUMERAL"\s*value\s*=\s*{')
             if parent_value_block and numeral_value_block:
                 parent_name_val = resolve_name(parent_value_block, loc_data, star_count_context)
                 numeral_key_match = re.search(r'key="([^"]+)"', numeral_value_block)
                 if numeral_key_match: return f"{parent_name_val} {numeral_key_match.group(1)}"
             return "Unknown Planet"
         if name_key == "SUBPLANET_NAME_FORMAT":
-            parent_value_block = _get_nested_block_content(variables_content, r'key="PARENT"\s*value\s*=\s*{')
+            parent_value_block,_,_ = _get_nested_block_content(variables_content, r'key="PARENT"\s*value\s*=\s*{')
             numeral_matches = re.findall(r'key="NUMERAL"\s*value\s*=\s*{\s*key="([^"]+)"', variables_content, re.DOTALL)
             if parent_value_block and numeral_matches:
                 moon_base_name = resolve_name(parent_value_block, loc_data, star_count_context)
@@ -185,11 +283,11 @@ def resolve_name(name_block_content, loc_data, star_count_context=None, parent_b
             return "Unknown Moon"
         if name_key == "ASTEROID_NAME_FORMAT":
             prefix, suffix = "",""
-            prefix_val_block = _get_nested_block_content(variables_content, r'key="prefix"\s*value\s*=\s*{')
+            prefix_val_block,_,_ = _get_nested_block_content(variables_content, r'key="prefix"\s*value\s*=\s*{')
             if prefix_val_block:
                 prefix_match = re.search(r'key="([^"]+)"', prefix_val_block)
                 if prefix_match: prefix = prefix_match.group(1)
-            suffix_val_block = _get_nested_block_content(variables_content, r'key="suffix"\s*value\s*=\s*{')
+            suffix_val_block,_,_ = _get_nested_block_content(variables_content, r'key="suffix"\s*value\s*=\s*{')
             if suffix_val_block:
                 suffix_match = re.search(r'key="([^"]+)"', suffix_val_block)
                 if suffix_match: suffix = suffix_match.group(1)
@@ -198,18 +296,6 @@ def resolve_name(name_block_content, loc_data, star_count_context=None, parent_b
     clean_name = re.sub(r'(_system|_SYSTEM)$', '', name_key)
     clean_name = re.sub(r'^(NAME_|SPEC_)', '', clean_name)
     return clean_name.replace('_', ' ')
-
-def _get_nested_block_content(text, start_regex):
-    match = re.search(start_regex, text)
-    if not match: return None
-    content_start_index = match.end()
-    brace_level = 1
-    for i in range(content_start_index, len(text)):
-        char = text[i]
-        if char == '{': brace_level += 1
-        elif char == '}': brace_level -= 1
-        if brace_level == 0: return text[content_start_index:i]
-    return None
 
 def build_galaxy_hierarchy(stars, planets, loc_data):
     moons_by_parent = defaultdict(list)
@@ -251,7 +337,7 @@ def build_galaxy_hierarchy(stars, planets, loc_data):
 
 def parse_block_content(block_text):
     data = {}
-    name_block_content = _get_nested_block_content(block_text, r'name\s*=\s*{')
+    name_block_content,_,_ = _get_nested_block_content(block_text, r'name\s*=\s*{')
     if name_block_content: data['raw_name_block'] = name_block_content
     else:
         simple_name_match = re.search(r'^\s*name="([^"]+)"', block_text, re.MULTILINE)
@@ -261,7 +347,7 @@ def parse_block_content(block_text):
         match = re.search(pattern, block_text, re.MULTILINE)
         if match: data[key] = match.group(1)
     
-    belt_block_content = _get_nested_block_content(block_text, r'asteroid_belts\s*=\s*{')
+    belt_block_content,_,_ = _get_nested_block_content(block_text, r'asteroid_belts\s*=\s*{')
     if belt_block_content:
         belts_data = []
         type_matches = re.findall(r'type="([^"]+)"', belt_block_content)
@@ -281,9 +367,8 @@ def parse_block_content(block_text):
     return data
 
 def parse_nebula_block(block_text):
-    """Parses a nebula block for its name, coordinates, and radius."""
     data = {}
-    name_block_content = _get_nested_block_content(block_text, r'name\s*=\s*{')
+    name_block_content,_,_ = _get_nested_block_content(block_text, r'name\s*=\s*{')
     if name_block_content: data['raw_name_block'] = name_block_content
     patterns = {
         'x': r'coordinate=\s*{[^}]*?x=([-\d\.]+)',
@@ -296,15 +381,21 @@ def parse_nebula_block(block_text):
     return data
 
 def parse_generic_block(block_text):
-    """Parses a generic block for simple key=value pairs and coordinates."""
     data = {}
+    name_match = re.search(r'^\s*name="([^"]+)"', block_text, re.MULTILINE)
+    if name_match:
+        data['name'] = name_match.group(1)
+    
     patterns = {
         'type': r'^\s*type="([^"]+)"',
-        'origin': r'^\s*origin=([\d]+)',
+        'origin': r'coordinate=\s*{[^}]*?origin=([\d\.]+)',
         'x': r'coordinate=\s*{[^}]*?x=([-\d\.]+)',
         'y': r'coordinate=\s*{[^}]*?y=([-\d\.]+)',
         'linked_to': r'^\s*linked_to=([\d]+)',
-        'bypass': r'^\s*bypass=([\d]+)'
+        'bypass': r'^\s*bypass=([\d]+)',
+        'graphical_culture': r'^\s*graphical_culture="([^"]+)"',
+        'owner': r'^\s*owner=([\d]+)',
+        'planet': r'^\s*planet=([\d]+)'
     }
     for key, pattern in patterns.items():
         match = re.search(pattern, block_text, re.MULTILINE)
@@ -313,12 +404,13 @@ def parse_generic_block(block_text):
     return data
 
 def parse_keyed_section(line_iterator, header_regex, block_parser_func):
-    """Parses a section of the gamestate with a consistent keyed-block structure."""
     objects = {}
     for line in line_iterator:
         if line.strip() == '}': return objects
         match = header_regex.match(line)
         if match:
+            if "none" in line:
+                continue
             object_id = match.group(1)
             block_lines = [line]
             brace_level = line.count('{') - line.count('}')
@@ -364,7 +456,6 @@ def parse_stellaris_save(path):
     except Exception as e:
         print(f"An error occurred during save file parsing: {e}"); return None, None, None, None, None, counts
 
-    # Process wormholes
     bypass_to_system_map = {}
     for nw_data in natural_wormholes.values():
         if 'bypass' in nw_data and 'origin' in nw_data: bypass_to_system_map[nw_data['bypass']] = nw_data['origin']
@@ -379,8 +470,7 @@ def parse_stellaris_save(path):
                 pair = tuple(sorted((system1, system2)))
                 if pair not in wormhole_pairs:
                     wormhole_pairs.append(pair)
-            processed_bypasses.add(bypass_id)
-            processed_bypasses.add(partner_id)
+            processed_bypasses.add(bypass_id); processed_bypasses.add(partner_id)
     
     parsed_megastructures = [m for m in megastructures_raw.values() if 'type' in m and 'origin' in m and m['origin'] != '4294967295']
     
@@ -441,14 +531,39 @@ def write_map_file(systems_list, nebulas_list, wormhole_pairs, output_path, loc_
         
         f.write('}\n')
 
-def write_initializer_file(systems_list, parsed_megastructures, start_system_id, output_path):
+def write_initializer_file(systems_list, parsed_megastructures, start_system_id, output_path, all_mega_definitions):
     if not systems_list: return
     
     megastructures_by_system = defaultdict(list)
     for mega in parsed_megastructures:
-        megastructures_by_system[mega['origin']].append(mega)
+        original_planet_id = mega.get('planet')
+        if not original_planet_id or original_planet_id == '4294967295':
+            megastructures_by_system[mega['origin']].append(mega)
     
     with open(output_path, 'w', encoding='utf-8') as f:
+        def write_body_init_effects(body, tabs):
+            init_effects = []
+            
+            if 'attached_mega' in body:
+                mega = body['attached_mega']
+                mega_type = mega.get("type")
+                mega_gfx = mega.get("graphical_culture", "none")
+                
+                flag_name = f"continuum_host_{mega_type}_{mega_gfx}"
+                init_effects.append(f'{tabs}\tset_planet_flag = {flag_name}')
+                
+                if 'name' in mega:
+                    clean_name = mega["name"].replace('"', '\\"')
+                    init_effects.append(f'{tabs}\tset_variable = {{ which = continuum_mega_name value = "{clean_name}" }}')
+
+            if body.get("planet_class") == "pc_habitat":
+                init_effects.append(f'{tabs}\tset_planet_flag = habitat')
+            
+            if init_effects:
+                f.write(f'{tabs}init_effect = {{\n')
+                f.write('\n'.join(init_effects) + '\n')
+                f.write(f'{tabs}}}\n')
+
         def write_moons_recursively(moons_list, indent_level):
             last_moon_orbit, last_moon_angle = 0.0, 0.0
             tabs = '\t' * indent_level
@@ -457,7 +572,7 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
             for moon in moons_list:
                 moon_info = moon.copy()
                 if 'x' in moon and 'y' in moon:
-                    moon_info['abs_angle'] = math.degrees(math.atan2(-float(moon.get('y', 0)), -float(moon.get('x', 0))))
+                    moon_info['abs_angle'] = math.degrees(math.atan2(-float(moon.get('y', '0')), -float(moon.get('x', '0'))))
                 else:
                     moon_info['abs_angle'] = 0
                 sorted_moons.append(moon_info)
@@ -479,6 +594,8 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                 f.write(f'{tabs}\tsize = {moon.get("planet_size", 5)}\n')
                 f.write(f'{tabs}\torbit_distance = {relative_orbit:.2f}\n')
                 f.write(f'{tabs}\torbit_angle = {round(relative_angle)}\n')
+                
+                write_body_init_effects(moon, tabs + '\t')
                 
                 if 'moons' in moon and moon['moons']: write_moons_recursively(moon['moons'], indent_level + 1)
                 f.write(f'{tabs}}}\n')
@@ -502,31 +619,31 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                 for p in system.get('planets', []):
                     body_info = {'type': 'planet', 'data': p, 'orbit': float(p.get('orbit', 0))}
                     if 'x' in p and 'y' in p:
-                        body_info['angle'] = math.degrees(math.atan2(-float(p.get('y', 0)), -float(p.get('x', 0))))
+                        body_info['angle'] = math.degrees(math.atan2(-float(p.get('y', '0')), -float(p.get('x', '0'))))
                     else:
                         body_info['angle'] = 0 
                     celestial_bodies.append(body_info)
 
+            mega_bodies = []
             if sys_id in megastructures_by_system:
                 for mega in megastructures_by_system[sys_id]:
-                    if not ('gateway' in mega.get('type', '') or 'lgate' in mega.get('type', '')):
-                        orbit = math.sqrt(float(mega.get('x', 0))**2 + float(mega.get('y', 0))**2)
-                        angle = math.degrees(math.atan2(-float(mega.get('y', 0)), -float(mega.get('x', 0))))
-                        celestial_bodies.append({'type': 'megastructure', 'data': mega, 'orbit': orbit, 'angle': angle})
+                    orbit = math.sqrt(float(mega.get('x', '0'))**2 + float(mega.get('y', '0'))**2)
+                    angle = math.degrees(math.atan2(-float(mega.get('y', '0')), -float(mega.get('x', '0'))))
+                    mega_bodies.append({'type': 'megastructure', 'data': mega, 'orbit': orbit, 'angle': angle})
             
-            if celestial_bodies:
-                max_orbit = max((b['orbit'] for b in celestial_bodies), default=0)
+            all_bodies = celestial_bodies + mega_bodies
+            if all_bodies:
+                max_orbit = max((b['orbit'] for b in all_bodies), default=0)
                 if max_orbit > 590:
                     scale_factor = 590 / max_orbit
-                    for body in celestial_bodies: body['orbit'] *= scale_factor
+                    for body in all_bodies: 
+                        body['orbit'] *= scale_factor
             
             celestial_bodies.sort(key=lambda x: (x['orbit'], x.get('angle', 0)))
 
             last_absolute_orbit, last_absolute_angle = 0.0, 0.0
             is_first_body = True
-            planets_to_write = [b for b in celestial_bodies if b['type'] == 'planet']
-
-            for body in planets_to_write:
+            for body in celestial_bodies:
                 planet = body['data']
                 absolute_orbit = body['orbit']
                 absolute_angle = body.get('angle', 0)
@@ -552,6 +669,8 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                 if sys_id == start_system_id and is_first_body and not any(s in p_class for s in ['_star', 'hole', 'pulsar']):
                     f.write('\t\thome_planet = yes\n')
                 
+                write_body_init_effects(planet, '\t\t')
+                
                 is_first_body = False
                 
                 if 'moons' in planet and planet['moons']: write_moons_recursively(planet['moons'], 2)
@@ -560,53 +679,75 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                 last_absolute_orbit = absolute_orbit
                 last_absolute_angle = absolute_angle
             
-            special_objects = [m for m in celestial_bodies if m['type'] == 'megastructure']
-            belts_data = system.get('asteroid_belts_data')
-
-            if special_objects or belts_data:
+            has_belts = system.get('asteroid_belts_data')
+            has_megas = sys_id in megastructures_by_system
+            if has_belts or has_megas:
                 f.write('\tinit_effect = {\n')
-                
-                if belts_data:
-                    for belt in belts_data:
+                if has_belts:
+                    for belt in system.get('asteroid_belts_data'):
                         belt_type = belt.get('type', 'rocky_asteroid_belt')
                         belt_radius = belt.get('radius', 95)
-                        # --- MODIFICATION START: Corrected effect command and parameter name ---
                         f.write(f'\t\tadd_asteroid_belt = {{ radius = {belt_radius} type = {belt_type} }}\n')
-                        # --- MODIFICATION END ---
-
-                if special_objects:
-                    for mega_body in special_objects:
+                if has_megas:
+                    for mega_body in sorted(mega_bodies, key=lambda x: (x['orbit'], x.get('angle', 0))):
                         mega = mega_body['data']
-                        mega_type = mega.get('type')
-                        orbit_dist = mega_body['orbit']
-                        orbit_angle = mega_body['angle']
-                        f.write(f'\t\tspawn_megastructure = {{ type = "{mega_type}" orbit_distance = {orbit_dist:.2f} orbit_angle = {orbit_angle:.2f} }}\n')
-                
-                f.write('\t}\n\n')
+                        
+                        mega_type = mega.get("type")
+                        
+                        param_dict = {'type': f'type = {mega_type}'}
+                        if 'name' in mega:
+                            clean_name = mega["name"].replace('"', '\\"')
+                            param_dict['name'] = f'name = "{clean_name}"'
+                        
+                        if 'graphical_culture' in mega: param_dict['graphical_culture'] = f'graphical_culture = {mega["graphical_culture"]}'
+                        
+                        if 'x' in mega and 'y' in mega:
+                            param_dict['orbit_distance'] = f'orbit_distance = {mega_body["orbit"]:.2f}'
+                            param_dict['orbit_angle'] = f'orbit_angle = {mega_body["angle"]:.2f}'
+
+                        order = ['type', 'name', 'graphical_culture', 'orbit_distance', 'orbit_angle']
+                        params = [param_dict[key] for key in order if key in param_dict]
+                        param_string = " ".join(params)
+                        f.write(f'\t\tspawn_megastructure = {{ {param_string} }}\n')
+
+                        mega_def = all_mega_definitions.get(mega_type, {})
+                        star_flags = mega_def.get('star_flags', [])
+                        
+                        for flag in star_flags:
+                            f.write(f'\t\tset_star_flag = {flag}\n')
+                        
+                f.write('\t}\n')
 
             f.write(f"}}\n\n")
 
-def write_on_actions_file(output_path):
-    content = """# These should run after the static galaxy has been generated.
+def find_body_in_system(system_bodies, target_id):
+    for body in system_bodies:
+        if body.get('id') == target_id:
+            return body
+        if 'moons' in body:
+            found_moon = find_body_in_system(body['moons'], target_id)
+            if found_moon:
+                return found_moon
+    return None
 
-on_game_start = {
-	events = {
-		continuum_wormhole.1 # spawn wormholes based on flags from the parser
-	}
-}
-"""
+def write_on_actions_file(output_path, has_wormholes, has_planet_megas):
+    content = "# These should run after the static galaxy has been generated.\n\non_game_start = {\n\tevents = {\n"
+    if has_wormholes:
+        content += "\t\tcontinuum_wormhole.1 # spawn wormholes based on flags from the parser\n"
+    if has_planet_megas:
+        content += "\t\tcontinuum_megastructure.1 # spawn planet-bound megastructures\n"
+    content += "\t}\n}\n"
+
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(content)
 
-def write_events_file(output_path, num_wormhole_pairs):
+def write_wormhole_events_file(output_path, num_wormhole_pairs):
+    if num_wormhole_pairs == 0: return
     event_calls = ""
-    if num_wormhole_pairs > 0:
-        for i in range(num_wormhole_pairs):
-            event_calls += f"\t\tcontinuum_create_wormhole_pair = {{ NUMBER = {i} }}\n"
+    for i in range(num_wormhole_pairs):
+        event_calls += f"\t\tcontinuum_create_wormhole_pair = {{ NUMBER = {i} }}\n"
     
     content = f"""namespace = continuum_wormhole
-
-# spawn non-random wormholes based on flags set by the python parser
 event = {{
 	id = continuum_wormhole.1
 	is_triggered_only = yes
@@ -619,17 +760,80 @@ event = {{
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(content)
 
-def write_scripted_effects_file(output_path):
-    content = """continuum_create_wormhole_pair = {
-	# Find the first system in the pair
+def write_megastructure_events_file(output_path, planet_megas):
+    """Generates the event file based on verified commands and syntax."""
+    if not planet_megas: return
+
+    unique_megas = set()
+    for mega in planet_megas:
+        mega_type = mega.get("type")
+        mega_gfx = mega.get("graphical_culture", "none")
+        unique_megas.add((mega_type, mega_gfx))
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write("namespace = continuum_megastructure\n\n")
+        f.write("event = {\n")
+        f.write("\tid = continuum_megastructure.1\n")
+        f.write("\tis_triggered_only = yes\n")
+        f.write("\thide_window = yes\n\n")
+        f.write("\timmediate = {\n")
+        f.write("\t\tevery_galaxy_planet = {\n")
+        
+        f.write("\t\t\tlimit = { OR = { ")
+        for mega_type, mega_gfx in sorted(list(unique_megas)):
+            flag_name = f"continuum_host_{mega_type}_{mega_gfx}"
+            f.write(f"has_planet_flag = {flag_name} ")
+        f.write("} }\n\n")
+        
+        is_first = True
+        for mega_type, mega_gfx in sorted(list(unique_megas)):
+            flag_name = f"continuum_host_{mega_type}_{mega_gfx}"
+            
+            if_statement = "if" if is_first else "else_if"
+            is_first = False
+            
+            f.write(f"\t\t\t{if_statement} = {{\n")
+            f.write(f"\t\t\t\tlimit = {{ has_planet_flag = {flag_name} }}\n\n")
+            
+            f.write("\t\t\t\tsolar_system = {\n")
+            f.write("\t\t\t\t\tif = {\n")
+            f.write("\t\t\t\t\t\tlimit = { prev = { is_variable_set = continuum_mega_name } }\n")
+            f.write("\t\t\t\t\t\tspawn_megastructure = {\n")
+            f.write(f"\t\t\t\t\t\t\ttype = {mega_type}\n")
+            f.write("\t\t\t\t\t\t\tplanet = prev\n")
+            if mega_gfx != "none":
+                f.write(f'\t\t\t\t\t\t\tgraphical_culture = {mega_gfx}\n')
+            f.write('\t\t\t\t\t\t\tname = "[prev.continuum_mega_name]"\n')
+            f.write("\t\t\t\t\t\t}\n")
+            f.write("\t\t\t\t\t}\n")
+            f.write("\t\t\t\t\telse = {\n")
+            f.write("\t\t\t\t\t\tspawn_megastructure = {\n")
+            f.write(f"\t\t\t\t\t\t\ttype = {mega_type}\n")
+            f.write("\t\t\t\t\t\t\tplanet = prev\n")
+            if mega_gfx != "none":
+                f.write(f'\t\t\t\t\t\t\tgraphical_culture = {mega_gfx}\n')
+            f.write("\t\t\t\t\t\t}\n")
+            f.write("\t\t\t\t\t}\n")
+            f.write("\t\t\t\t}\n\n")
+            
+            f.write(f"\t\t\t\tremove_planet_flag = {flag_name}\n")
+            f.write("\t\t\t\tclear_variable = continuum_mega_name\n")
+            f.write("\t\t\t}\n")
+        
+        f.write("\t\t}\n")
+        f.write("\t}\n")
+        f.write("}\n")
+
+def write_scripted_effects_file(output_path, num_wormhole_pairs):
+    content = ""
+    if num_wormhole_pairs > 0:
+        content += """continuum_create_wormhole_pair = {
 	random_system = {
 		limit = { has_star_flag = continuum_wormhole_$NUMBER$ }
-		# Check if it already has a wormhole, just in case. If not, save it.
 		if = {
 			limit = { has_natural_wormhole = no }
 			save_event_target_as = continuum_wormhole_from
 		} 
-		# If it does have a wormhole, find a nearby system that doesn't.
 		else = {
 			closest_system = {
 				limit = { has_natural_wormhole = no }
@@ -637,12 +841,10 @@ def write_scripted_effects_file(output_path):
 				save_event_target_as = continuum_wormhole_from
 			}
 		}
-
-		# Find the second system in the pair
 		random_system = {
 			limit = {
 				has_star_flag = continuum_wormhole_$NUMBER$
-				NOT = { is_same_value = prev } # ensure it's not the same system
+				NOT = { is_same_value = prev }
 			}
 			if = {
 				limit = { has_natural_wormhole = no }
@@ -656,8 +858,6 @@ def write_scripted_effects_file(output_path):
 			}
 		}
 	}
-
-	# Create and link the wormholes if both ends were found successfully
 	if = {
 		limit = {
 			exists = event_target:continuum_wormhole_from
@@ -665,19 +865,8 @@ def write_scripted_effects_file(output_path):
 			exists = event_target:continuum_wormhole_to
 			event_target:continuum_wormhole_to = { has_natural_wormhole = no }
 		}
-		event_target:continuum_wormhole_from = {
-			spawn_natural_wormhole = {
-				bypass_type = wormhole
-				random_pos = yes
-			}
-		}
-		event_target:continuum_wormhole_to = {
-			spawn_natural_wormhole = {
-				bypass_type = wormhole
-				random_pos = yes
-			}
-			link_wormholes = event_target:continuum_wormhole_from
-		}
+		event_target:continuum_wormhole_from = { spawn_natural_wormhole = { bypass_type = wormhole random_pos = yes } }
+		event_target:continuum_wormhole_to = { spawn_natural_wormhole = { bypass_type = wormhole random_pos = yes } link_wormholes = event_target:continuum_wormhole_from }
 	}
 }
 """
@@ -690,26 +879,25 @@ def main():
     
     stellaris_user_dir = find_stellaris_user_dir()
     if not stellaris_user_dir or not os.path.isdir(stellaris_user_dir):
-        print("FATAL ERROR: Could not automatically find the Stellaris user documents directory."); input("Press Enter to exit."); return
+        print("FATAL ERROR: Could not find Stellaris user directory."); input("Press Enter to exit."); return
 
     stellaris_install_dir = find_stellaris_install_dir()
     if not stellaris_install_dir or not os.path.isdir(stellaris_install_dir):
-        print("FATAL ERROR: Could not automatically find the Stellaris game installation directory."); input("Press Enter to exit."); return
+        print("FATAL ERROR: Could not find Stellaris install directory."); input("Press Enter to exit."); return
 
     save_game_dir = os.path.join(stellaris_user_dir, 'save games')
     if not os.path.isdir(save_game_dir):
         print(f"FATAL ERROR: Save game directory not found at '{save_game_dir}'"); input("Press Enter to exit."); return
-        
+    
     all_saves = []
-    for root, dirs, _ in os.walk(save_game_dir):
-        for d in dirs:
-            save_path = os.path.join(root, d)
-            sav_files = [f for f in os.listdir(save_path) if f.endswith('.sav')]
-            if sav_files:
-                latest_sav_path = max([os.path.join(save_path, f) for f in sav_files], key=os.path.getmtime)
-                version, date = get_save_meta_data(latest_sav_path)
-                display_name = f"{d}\\{os.path.basename(latest_sav_path)}"
-                all_saves.append({'name': display_name, 'path': latest_sav_path, 'version': version, 'date': date})
+    for root, _, files in os.walk(save_game_dir):
+        relative_dir_path = os.path.relpath(root, save_game_dir)
+        for file in files:
+            if file.endswith('.sav'):
+                full_sav_path = os.path.join(root, file)
+                version, date = get_save_meta_data(full_sav_path)
+                display_name = os.path.join(relative_dir_path, file) if relative_dir_path != '.' else file
+                all_saves.append({'name': display_name, 'path': full_sav_path, 'version': version, 'date': date})
 
     if not all_saves: print("No valid save games found."); input("Press Enter to exit."); return
     
@@ -718,24 +906,25 @@ def main():
 
     def version_sort_key(v_str): parts = re.findall(r'(\d+)', v_str); return [int(p) for p in parts]
 
-    print(f"\nSave game location detected:\n{save_game_dir}\n"); print("Please select a save game to parse:")
+    print(f"\nSave game location: {save_game_dir}\n"); print("Please select a save game:")
     
     save_list_for_selection = []
     for version_str in sorted(saves_by_version.keys(), key=version_sort_key):
         print(f"\n- Game Version {version_str} -")
-        for save in saves_by_version[version_str]:
+        sorted_saves = sorted(saves_by_version[version_str], key=lambda x: x['date'], reverse=True)
+        for save in sorted_saves:
             save_list_for_selection.append(save)
             print(f"  [{len(save_list_for_selection)}] {save['date']} {save['name']}")
     
     choice = -1
     while True:
         try:
-            choice_str = input(f"\nEnter a Selection or type 'q' to quit: ").lower()
-            if choice_str == 'q': print("Exiting parser. Goodbye!"); return
+            choice_str = input(f"\nEnter a Selection or 'q' to quit: ").lower()
+            if choice_str == 'q': print("Exiting."); return
             choice = int(choice_str)
             if 1 <= choice <= len(save_list_for_selection): break
-            else: print("Invalid number. Please enter a number from the list.")
-        except ValueError: print("Invalid input. Please enter a number or 'q'.")
+            else: print("Invalid number.")
+        except ValueError: print("Invalid input.")
 
     selected_save = save_list_for_selection[choice - 1]
     save_file_path, save_version_str = selected_save['path'], selected_save['version']
@@ -743,17 +932,16 @@ def main():
     try:
         clean_save_version = ".".join(re.findall(r'(\d+)', save_version_str)[0:2])
         if float(clean_save_version) < float(SUPPORTED_STELLARIS_VERSION):
-            print("\n--- WARNING ---"); print(f"This save is for Stellaris version {save_version_str}, but this parser is designed for version {SUPPORTED_STELLARIS_VERSION}.0+.")
-            print("Please open and re-save your game in the latest version of Stellaris for best results.")
-            if input("\nDo you want to continue anyway? (y/n): ").lower() != 'y':
+            print(f"\n--- WARNING: This save is for Stellaris {save_version_str}, but this parser is for {SUPPORTED_STELLARIS_VERSION}.0+. ---")
+            print("Please re-save your game in the latest version of Stellaris for best results.")
+            if input("Continue anyway? (y/n): ").lower() != 'y':
                 print("Parsing cancelled."); input("Press Enter to exit."); return
-    except Exception: print(f"Warning: Could not parse version string '{save_version_str}'. Version check skipped.")
+    except Exception: print(f"Warning: Could not parse version string '{save_version_str}'.")
 
     script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in locals() else os.getcwd()
 
-    # --- Directory Cleanup and Creation ---
     print("\nCleaning up old mod directories...")
-    dirs_to_clean = [os.path.join(script_dir, 'map'), os.path.join(script_dir, 'common'), os.path.join(script_dir, 'events')]
+    dirs_to_clean = [os.path.join(script_dir, d) for d in ['map', 'common', 'events']]
     for d in dirs_to_clean:
         if os.path.isdir(d):
             try:
@@ -769,15 +957,16 @@ def main():
     output_effects_dir = os.path.join(script_dir, "common", "scripted_effects")
     output_events_dir = os.path.join(script_dir, "events")
 
-    os.makedirs(output_map_dir, exist_ok=True)
-    os.makedirs(output_init_dir, exist_ok=True)
-    os.makedirs(output_onactions_dir, exist_ok=True)
-    os.makedirs(output_effects_dir, exist_ok=True)
-    os.makedirs(output_events_dir, exist_ok=True)
-    print("Directory structure created successfully.")
+    for d in [output_map_dir, output_init_dir, output_onactions_dir, output_effects_dir, output_events_dir]:
+        os.makedirs(d, exist_ok=True)
+    print("Directory structure created.")
 
     print(f"\nParsing: {selected_save['name']}...")
     
+    print("\nScanning for megastructure definitions...")
+    mega_files = find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/megastructures')
+    all_mega_definitions = parse_all_megastructures(mega_files)
+
     game_language = get_stellaris_language(stellaris_user_dir)
     localization = load_localization_data(stellaris_install_dir, game_language)
     if not localization: print("FATAL ERROR: No localization data loaded."); input("Press Enter to exit."); return
@@ -786,6 +975,22 @@ def main():
     
     if parsed_stars and parsed_planets:
         galaxy_data = build_galaxy_hierarchy(parsed_stars, parsed_planets, localization)
+        
+        print("Attaching planet-bound megastructures to hosts...")
+        planet_bound_megas = []
+        systems_map = {sys['id']: sys for sys in galaxy_data}
+
+        for mega in parsed_megastructures:
+            original_planet_id = mega.get('planet')
+            if original_planet_id and original_planet_id != '4294967295' and mega.get('origin') in systems_map:
+                planet_bound_megas.append(mega)
+                target_system = systems_map[mega['origin']]
+                host_planet = find_body_in_system(target_system.get('planets', []), original_planet_id)
+                if host_planet:
+                    host_planet['attached_mega'] = mega
+                else:
+                    print(f"Warning: Could not find host planet ID {original_planet_id} for megastructure '{mega.get('type')}' in system {target_system.get('name')}")
+        
         system_count = len(galaxy_data)
         start_system_id = None
         for system in galaxy_data:
@@ -795,30 +1000,33 @@ def main():
         if not start_system_id and galaxy_data: 
             start_system_id = galaxy_data[0].get('id')
         
-        # --- File Generation ---
         output_map_file = os.path.join(output_map_dir, "continuum.txt")
         output_initializer_file = os.path.join(output_init_dir, "continuum_initializers.txt")
         output_onactions_file = os.path.join(output_onactions_dir, "~~~continuum_on_actions.txt")
-        output_events_file = os.path.join(output_events_dir, "continuum_wormhole_events.txt")
-        output_effects_file = os.path.join(output_effects_dir, "continuum_wormhole_effects.txt")
+        output_wormhole_events_file = os.path.join(output_events_dir, "continuum_wormhole_events.txt")
+        output_wormhole_effects_file = os.path.join(output_effects_dir, "continuum_wormhole_effects.txt")
+        output_mega_events_file = os.path.join(output_events_dir, "continuum_megastructure_events.txt")
 
         write_map_file(galaxy_data, parsed_nebulas, wormhole_pairs, output_map_file, localization)
-        write_initializer_file(galaxy_data, parsed_megastructures, start_system_id, output_initializer_file)
-        write_on_actions_file(output_onactions_file)
-        write_events_file(output_events_file, len(wormhole_pairs)) # Pass the number of pairs
-        write_scripted_effects_file(output_effects_file)
+        write_initializer_file(galaxy_data, parsed_megastructures, start_system_id, output_initializer_file, all_mega_definitions)
+        write_on_actions_file(output_onactions_file, has_wormholes=(len(wormhole_pairs) > 0), has_planet_megas=(len(planet_bound_megas) > 0))
+        write_wormhole_events_file(output_wormhole_events_file, len(wormhole_pairs))
+        write_megastructure_events_file(output_mega_events_file, planet_bound_megas)
+        write_scripted_effects_file(output_wormhole_effects_file, len(wormhole_pairs))
         
         print("\n--- PARSING COMPLETE ---")
         print(f"Found {system_count} systems, {counts['nebula']} nebulas, {counts['star']} stars, {counts['planet']} planets, {counts['moon']} moons, and {counts['asteroid']} asteroids.")
-        print(f"Found {counts['megastructure']} megastructures and {counts['wormhole_pair']} wormhole pairs.")
+        print(f"Found {counts['megastructure']} megastructures ({len(planet_bound_megas)} planet-bound) and {counts['wormhole_pair']} wormhole pairs.")
         
         print("\nAll required mod files have been generated:")
-        print(f"- {os.path.relpath(output_map_file, script_dir)}")
-        print(f"- {os.path.relpath(output_initializer_file, script_dir)}")
-        print(f"- {os.path.relpath(output_onactions_file, script_dir)}")
-        print(f"- {os.path.relpath(output_events_file, script_dir)}")
-        print(f"- {os.path.relpath(output_effects_file, script_dir)}")
-        print("\nTo load your imported game, you may now select the Continuum galaxy when starting a New Game.")
+        for path in [output_map_file, output_initializer_file, output_onactions_file, output_wormhole_events_file, output_mega_events_file, output_wormhole_effects_file]:
+            if os.path.exists(path):
+                is_dir = os.path.isdir(path)
+                is_empty = not os.listdir(path) if is_dir else os.path.getsize(path) == 0
+                if not (is_dir and is_empty):
+                     print(f"- {os.path.relpath(path, script_dir)}")
+        
+        print("\nTo load your imported game, select the 'Continuum' galaxy when starting a New Game.")
 
     else:
         print("Could not parse critical galaxy data from the save file.")
