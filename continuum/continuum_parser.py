@@ -6,6 +6,7 @@ import math
 import os
 import sys
 import shutil
+import json
 
 # Conditional import for Windows-specific registry access
 if sys.platform == "win32":
@@ -298,41 +299,66 @@ def resolve_name(name_block_content, loc_data, star_count_context=None, parent_b
     return clean_name.replace('_', ' ')
 
 def build_galaxy_hierarchy(stars, planets, loc_data):
-    moons_by_parent = defaultdict(list)
-    for planet_id, planet_data in planets.items():
-        if 'moon_of' in planet_data: moons_by_parent[planet_data['moon_of']].append(planet_data)
+    """
+    Builds a detailed hierarchical map of each star system based on explicit save game structure.
+    """
     hierarchical_systems = []
     for star_id, star_data in stars.items():
-        system = star_data; system['planets'] = []
+        system = star_data
         system['system_star_class'] = system.get('star_class', 'sc_g')
-        if 'raw_name_block' in star_data: system['name'] = resolve_name(star_data['raw_name_block'], loc_data)
-        for planet_id in star_data.get('planet_ids', []):
-            if planet_id in planets:
-                planet_data = planets[planet_id]
-                if 'moon_of' not in planet_data:
-                    if 'x' in planet_data and 'y' in planet_data: planet_data['orbit'] = math.sqrt(float(planet_data['x'])**2 + float(planet_data['y'])**2)
-                    elif 'orbit' in planet_data: planet_data['orbit'] = abs(float(planet_data['orbit']))
-                    system['planets'].append(planet_data)
-        def attach_moons_recursively(body_list):
-            for body in body_list:
-                if body.get('id') in moons_by_parent:
-                    body['moons'] = sorted(moons_by_parent[body.get('id')], key=lambda m: float(m.get('orbit', 0)))
-                    attach_moons_recursively(body['moons'])
-        attach_moons_recursively(system['planets'])
-        system['planets'].sort(key=lambda p: (
-            0 if any(s in p.get('planet_class', '') for s in ['_star', 'hole', 'pulsar']) and float(p.get('orbit', 0)) == 0 else 2 if any(s in p.get('planet_class', '') for s in ['_star', 'hole', 'pulsar']) else 1,
-            float(p.get('orbit', 0))
-        ))
-        star_count = sum(1 for p in system['planets'] if any(s in p.get('planet_class', '') for s in ['_star', 'hole', 'pulsar']))
-        def resolve_names_recursively(body_list, star_context):
-            for body in body_list:
-                if 'raw_name_block' in body: body['name'] = resolve_name(body['raw_name_block'], loc_data, star_context)
-                if 'moons' in body:
-                    for moon in body['moons']:
-                        if 'raw_name_block' in moon: moon['name'] = resolve_name(moon['raw_name_block'], loc_data, star_context, parent_body_name=body.get('name'))
-        resolve_names_recursively(system['planets'], star_count)
-        print(f"System {system.get('name', 'Unknown')}: Processed.")
+        if 'raw_name_block' in star_data:
+            system['name'] = resolve_name(star_data['raw_name_block'], loc_data)
+        
+        all_bodies_in_system_map = {}
+        for p_id in star_data.get('planet_ids', []):
+            if p_id in planets:
+                body = planets[p_id]
+                body['abs_x'] = float(body.get('x', '0'))
+                body['abs_y'] = float(body.get('y', '0'))
+                body['children'] = []
+                body['parent'] = None
+                body['body_type'] = 'star' if any(s in body.get('planet_class', '') for s in ['_star', 'hole', 'pulsar']) else 'planet'
+                all_bodies_in_system_map[p_id] = body
+
+        system_center = {'id': '0', 'abs_x': 0.0, 'abs_y': 0.0, 'children': [], 'nesting_level': 0, 'name': 'System Center'}
+        
+        # Explicitly parent moons first, based on 'moon_of' tag
+        for body_id, body in all_bodies_in_system_map.items():
+            if 'moon_of' in body:
+                parent_id = body['moon_of']
+                if parent_id in all_bodies_in_system_map:
+                    parent_body = all_bodies_in_system_map[parent_id]
+                    parent_body['children'].append(body)
+                    body['parent'] = parent_body
+        
+        # Parent all remaining unparented bodies to the system center
+        for body_id, body in all_bodies_in_system_map.items():
+            if body['parent'] is None:
+                system_center['children'].append(body)
+                body['parent'] = system_center
+        
+        def set_nesting_levels(body, level):
+            body['nesting_level'] = level
+            for child in body.get('children', []):
+                set_nesting_levels(child, level + 1)
+        
+        set_nesting_levels(system_center, 0)
+        
+        system['hierarchy_root'] = system_center
+
+        star_count = len([b for b in all_bodies_in_system_map.values() if b['body_type'] == 'star'])
+        def resolve_all_names(body):
+            if 'raw_name_block' in body:
+                parent_name = body.get('parent', {}).get('name')
+                body['name'] = resolve_name(body['raw_name_block'], loc_data, star_count, parent_body_name=parent_name)
+            for child in body.get('children', []):
+                resolve_all_names(child)
+        
+        resolve_all_names(system_center)
+
+        print(f"System {system.get('name', 'Unknown')}: Processed hierarchy.")
         hierarchical_systems.append(system)
+    
     return hierarchical_systems
 
 def parse_block_content(block_text):
@@ -541,21 +567,52 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
             megastructures_by_system[mega['origin']].append(mega)
     
     with open(output_path, 'w', encoding='utf-8') as f:
+        # --- START OF 7 ORBIT CALCULATION FUNCTIONS (LOGICAL GROUPING) ---
+
+        def _calculate_orbit_params(body, parent):
+            """Core calculation logic based on absolute coordinates."""
+            if not parent:
+                print(f"ERROR: Body '{body.get('name', body.get('id'))}' has a None parent. Skipping calculation.")
+                return {'distance': 0, 'angle': 0}
+            rel_x = body['abs_x'] - parent['abs_x']
+            rel_y = body['abs_y'] - parent['abs_y']
+            distance = math.sqrt(rel_x**2 + rel_y**2)
+            angle = math.degrees(math.atan2(-rel_y, -rel_x))
+            return {'distance': distance, 'angle': angle}
+
+        def calculate_level_1_orbit(body, parent):
+            """Nesting Level 1: Bodies orbiting the system center (barycenter)."""
+            return _calculate_orbit_params(body, parent)
+
+        def calculate_level_2_orbit(body, parent):
+            """Nesting Level 2: Bodies orbiting a Level 1 body."""
+            return _calculate_orbit_params(body, parent)
+
+        def calculate_level_3_orbit(body, parent):
+            """Nesting Level 3: Bodies orbiting a Level 2 body."""
+            return _calculate_orbit_params(body, parent)
+        
+        def calculate_level_4_orbit(body, parent):
+            """Nesting Level 4: Bodies orbiting a Level 3 body."""
+            return _calculate_orbit_params(body, parent)
+
+        def calculate_deeper_level_orbit(body, parent):
+            """Nesting Level 5+: Bodies in deeper orbits."""
+            return _calculate_orbit_params(body, parent)
+        
+        # --- END OF 7 ORBIT CALCULATION FUNCTIONS ---
+
         def write_body_init_effects(body, tabs):
             init_effects = []
-            
             if 'attached_mega' in body:
                 mega = body['attached_mega']
                 mega_type = mega.get("type")
                 mega_gfx = mega.get("graphical_culture", "none")
-                
                 flag_name = f"continuum_host_{mega_type}_{mega_gfx}"
                 init_effects.append(f'{tabs}\tset_planet_flag = {flag_name}')
-                
                 if 'name' in mega:
                     clean_name = mega["name"].replace('"', '\\"')
                     init_effects.append(f'{tabs}\tset_variable = {{ which = continuum_mega_name value = "{clean_name}" }}')
-
             if body.get("planet_class") == "pc_habitat":
                 init_effects.append(f'{tabs}\tset_planet_flag = habitat')
             
@@ -563,45 +620,6 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                 f.write(f'{tabs}init_effect = {{\n')
                 f.write('\n'.join(init_effects) + '\n')
                 f.write(f'{tabs}}}\n')
-
-        def write_moons_recursively(moons_list, indent_level):
-            last_moon_orbit, last_moon_angle = 0.0, 0.0
-            tabs = '\t' * indent_level
-            
-            sorted_moons = []
-            for moon in moons_list:
-                moon_info = moon.copy()
-                if 'x' in moon and 'y' in moon:
-                    moon_info['abs_angle'] = math.degrees(math.atan2(-float(moon.get('y', '0')), -float(moon.get('x', '0'))))
-                else:
-                    moon_info['abs_angle'] = 0
-                sorted_moons.append(moon_info)
-            sorted_moons.sort(key=lambda m: (float(m.get('orbit', 0)), m['abs_angle']))
-
-            for moon in sorted_moons:
-                absolute_orbit = float(moon.get("orbit", 10))
-                absolute_angle = moon.get("abs_angle", 0)
-                relative_orbit = absolute_orbit - last_moon_orbit
-                relative_angle = absolute_angle - last_moon_angle
-                if relative_angle > 180: relative_angle -= 360
-                if relative_angle < -180: relative_angle += 360
-
-                f.write(f'{tabs}moon = {{\n')
-                if "name" in moon:
-                    moon_name = moon["name"].replace('"', '')
-                    f.write(f'{tabs}\tname = "{moon_name}"\n')
-                f.write(f'{tabs}\tclass = "{moon.get("planet_class", "pc_barren_cold")}"\n')
-                f.write(f'{tabs}\tsize = {moon.get("planet_size", 5)}\n')
-                f.write(f'{tabs}\torbit_distance = {relative_orbit:.2f}\n')
-                f.write(f'{tabs}\torbit_angle = {round(relative_angle)}\n')
-                
-                write_body_init_effects(moon, tabs + '\t')
-                
-                if 'moons' in moon and moon['moons']: write_moons_recursively(moon['moons'], indent_level + 1)
-                f.write(f'{tabs}}}\n')
-                
-                last_moon_orbit = absolute_orbit
-                last_moon_angle = absolute_angle
 
         for system in systems_list:
             sys_id = system.get('id')
@@ -611,74 +629,126 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
 
             f.write(f"{initializer_name} = {{\n")
             f.write(f'\tname = "{sys_name}"\n\tclass = "{star_class}"\n')
-            
             f.write('\tusage = empire_init\n\n' if sys_id == start_system_id else '\tusage = misc_system_init\n\n')
-            
-            celestial_bodies = []
-            if system.get('planets'):
-                for p in system.get('planets', []):
-                    body_info = {'type': 'planet', 'data': p, 'orbit': float(p.get('orbit', 0))}
-                    if 'x' in p and 'y' in p:
-                        body_info['angle'] = math.degrees(math.atan2(-float(p.get('y', '0')), -float(p.get('x', '0'))))
-                    else:
-                        body_info['angle'] = 0 
-                    celestial_bodies.append(body_info)
 
-            mega_bodies = []
-            if sys_id in megastructures_by_system:
-                for mega in megastructures_by_system[sys_id]:
-                    orbit = math.sqrt(float(mega.get('x', '0'))**2 + float(mega.get('y', '0'))**2)
-                    angle = math.degrees(math.atan2(-float(mega.get('y', '0')), -float(mega.get('x', '0'))))
-                    mega_bodies.append({'type': 'megastructure', 'data': mega, 'orbit': orbit, 'angle': angle})
+            # --- START OF NON-RECURSIVE ORCHESTRATOR ---
             
-            all_bodies = celestial_bodies + mega_bodies
-            if all_bodies:
-                max_orbit = max((b['orbit'] for b in all_bodies), default=0)
-                if max_orbit > 590:
-                    scale_factor = 590 / max_orbit
-                    for body in all_bodies: 
-                        body['orbit'] *= scale_factor
+            hierarchy_root = system.get('hierarchy_root')
+            if not hierarchy_root:
+                f.write("}\n\n")
+                continue
+
+            # --- Automatic System Scaling ---
+            max_radius = 0
+            all_bodies_in_system = []
+            queue = [hierarchy_root]
+            while queue:
+                body = queue.pop(0)
+                all_bodies_in_system.append(body)
+                queue.extend(body.get('children', []))
+
+            for body in all_bodies_in_system[1:]: # Skip root
+                radius = math.sqrt(body['abs_x']**2 + body['abs_y']**2)
+                if radius > max_radius:
+                    max_radius = radius
             
-            celestial_bodies.sort(key=lambda x: (x['orbit'], x.get('angle', 0)))
+            scale_factor = 1.0
+            if max_radius > 590:
+                scale_factor = 590 / max_radius
+                print(f"INFO: System '{sys_name}' is too large (radius: {max_radius:.2f}). Scaling by {scale_factor:.2f}.")
+                for body in all_bodies_in_system:
+                    body['abs_x'] *= scale_factor
+                    body['abs_y'] *= scale_factor
 
-            last_absolute_orbit, last_absolute_angle = 0.0, 0.0
-            is_first_body = True
-            for body in celestial_bodies:
-                planet = body['data']
-                absolute_orbit = body['orbit']
-                absolute_angle = body.get('angle', 0)
-                
-                relative_orbit = absolute_orbit - last_absolute_orbit
-                relative_angle = absolute_angle - last_absolute_angle
-                if relative_angle > 180: relative_angle -= 360
-                if relative_angle < -180: relative_angle += 360
+            # --- True Barycentric Writing ---
+            level_1_bodies = sorted(hierarchy_root['children'], key=lambda b: _calculate_orbit_params(b, hierarchy_root)['distance'])
+            
+            last_orbit_l1, last_angle_l1 = 0.0, 0.0 
+            is_first_l1_body = True
+            for body_l1 in level_1_bodies:
+                orbit_params_l1 = calculate_level_1_orbit(body_l1, body_l1['parent'])
+                rel_dist_l1 = orbit_params_l1['distance'] - last_orbit_l1
+                rel_angle_l1 = orbit_params_l1['angle'] - last_angle_l1
+                if rel_angle_l1 > 180: rel_angle_l1 -= 360
+                if rel_angle_l1 < -180: rel_angle_l1 += 360
 
-                if is_first_body:
-                    relative_angle = 0
-                    absolute_angle = 0
-                
                 f.write(f'\tplanet = {{\n')
-                if "name" in planet:
-                    planet_name = planet["name"].replace('"', '')
-                    if not planet_name.startswith("NEW COLONY"): f.write(f'\t\tname = "{planet_name}"\n')
-                p_class = planet.get("planet_class", "pc_barren")
-                f.write(f'\t\tclass = "{p_class}"\n\t\tsize = {planet.get("planet_size", 10)}\n')
-                f.write(f'\t\torbit_distance = {relative_orbit:.2f}\n')
-                f.write(f'\t\torbit_angle = {round(relative_angle)}\n')
+                if "name" in body_l1:
+                    clean_name = body_l1["name"].replace('"', '')
+                    f.write(f'\t\tname = "{clean_name}"\n')
+                f.write(f'\t\tclass = "{body_l1.get("planet_class", "pc_barren")}"\n\t\tsize = {body_l1.get("planet_size", 10)}\n')
                 
-                if sys_id == start_system_id and is_first_body and not any(s in p_class for s in ['_star', 'hole', 'pulsar']):
-                    f.write('\t\thome_planet = yes\n')
+                if is_first_l1_body:
+                    f.write(f'\t\torbit_distance = {orbit_params_l1["distance"]:.2f}\n')
+                    f.write(f'\t\torbit_angle = {round(orbit_params_l1["angle"])}\n')
+                    is_first_l1_body = False
+                else:
+                    f.write(f'\t\torbit_distance = {rel_dist_l1:.2f}\n\t\torbit_angle = {round(rel_angle_l1)}\n')
+
+                if sys_id == start_system_id and body_l1 is level_1_bodies[0] and body_l1['body_type'] != 'star':
+                     f.write('\t\thome_planet = yes\n')
                 
-                write_body_init_effects(planet, '\t\t')
+                write_body_init_effects(body_l1, '\t\t')
                 
-                is_first_body = False
-                
-                if 'moons' in planet and planet['moons']: write_moons_recursively(planet['moons'], 2)
-                f.write(f'\t}}\n\n')
-                
-                last_absolute_orbit = absolute_orbit
-                last_absolute_angle = absolute_angle
-            
+                last_orbit_l2, last_angle_l2 = 0.0, 0.0
+                children_l2 = sorted(body_l1.get('children', []), key=lambda b: _calculate_orbit_params(b, body_l1)['distance'])
+                is_first_l2_body = True
+                for body_l2 in children_l2:
+                    orbit_params_l2 = calculate_level_2_orbit(body_l2, body_l2['parent'])
+                    rel_dist_l2 = orbit_params_l2['distance'] - last_orbit_l2
+                    rel_angle_l2 = orbit_params_l2['angle'] - last_angle_l2
+                    if rel_angle_l2 > 180: rel_angle_l2 -= 360
+                    if rel_angle_l2 < -180: rel_angle_l2 += 360
+                    
+                    f.write(f'\t\tmoon = {{\n')
+                    if "name" in body_l2:
+                        clean_name = body_l2["name"].replace('"', '')
+                        f.write(f'\t\t\tname = "{clean_name}"\n')
+                    f.write(f'\t\t\tclass = "{body_l2.get("planet_class", "pc_barren")}"\n\t\t\tsize = {body_l2.get("planet_size", 10)}\n')
+                    
+                    if is_first_l2_body:
+                        f.write(f'\t\t\torbit_distance = {orbit_params_l2["distance"]:.2f}\n')
+                        f.write(f'\t\t\torbit_angle = {round(orbit_params_l2["angle"])}\n')
+                        is_first_l2_body = False
+                    else:
+                        f.write(f'\t\t\torbit_distance = {rel_dist_l2:.2f}\n\t\t\torbit_angle = {round(rel_angle_l2)}\n')
+                    
+                    write_body_init_effects(body_l2, '\t\t\t')
+
+                    last_orbit_l3, last_angle_l3 = 0.0, 0.0
+                    children_l3 = sorted(body_l2.get('children', []), key=lambda b: _calculate_orbit_params(b, body_l2)['distance'])
+                    is_first_l3_body = True
+                    for body_l3 in children_l3:
+                        orbit_params_l3 = calculate_level_3_orbit(body_l3, body_l3['parent'])
+                        rel_dist_l3 = orbit_params_l3['distance'] - last_orbit_l3
+                        rel_angle_l3 = orbit_params_l3['angle'] - last_angle_l3
+                        if rel_angle_l3 > 180: rel_angle_l3 -= 360
+                        if rel_angle_l3 < -180: rel_angle_l3 += 360
+
+                        f.write(f'\t\t\tmoon = {{\n')
+                        if "name" in body_l3:
+                            clean_name = body_l3["name"].replace('"', '')
+                            f.write(f'\t\t\t\tname = "{clean_name}"\n')
+                        f.write(f'\t\t\t\tclass = "{body_l3.get("planet_class", "pc_barren")}"\n\t\t\tsize = {body_l3.get("planet_size", 10)}\n')
+                        
+                        if is_first_l3_body:
+                             f.write(f'\t\t\t\torbit_distance = {orbit_params_l3["distance"]:.2f}\n')
+                             f.write(f'\t\t\t\torbit_angle = {round(orbit_params_l3["angle"])}\n')
+                             is_first_l3_body = False
+                        else:
+                            f.write(f'\t\t\t\torbit_distance = {rel_dist_l3:.2f}\n\t\t\t\torbit_angle = {round(rel_angle_l3)}\n')
+
+                        write_body_init_effects(body_l3, '\t\t\t\t')
+                        f.write(f'\t\t\t}}\n')
+                        last_orbit_l3, last_angle_l3 = orbit_params_l3['distance'], orbit_params_l3['angle']
+                    
+                    f.write(f'\t\t}}\n')
+                    last_orbit_l2, last_angle_l2 = orbit_params_l2['distance'], orbit_params_l2['angle']
+
+                f.write('\t}\n\n')
+                last_orbit_l1, last_angle_l1 = orbit_params_l1['distance'], orbit_params_l1['angle']
+
+            # --- Add init_effect for belts and space-born megastructures ---
             has_belts = system.get('asteroid_belts_data')
             has_megas = sys_id in megastructures_by_system
             if has_belts or has_megas:
@@ -686,25 +756,24 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                 if has_belts:
                     for belt in system.get('asteroid_belts_data'):
                         belt_type = belt.get('type', 'rocky_asteroid_belt')
-                        belt_radius = belt.get('radius', 95)
-                        f.write(f'\t\tadd_asteroid_belt = {{ radius = {belt_radius} type = {belt_type} }}\n')
+                        belt_radius = float(belt.get('radius', 95)) * scale_factor
+                        f.write(f'\t\tadd_asteroid_belt = {{ radius = {belt_radius:.2f} type = {belt_type} }}\n')
                 if has_megas:
-                    for mega_body in sorted(mega_bodies, key=lambda x: (x['orbit'], x.get('angle', 0))):
-                        mega = mega_body['data']
-                        
+                    for mega in megastructures_by_system[sys_id]:
                         mega_type = mega.get("type")
-                        
                         param_dict = {'type': f'type = {mega_type}'}
                         if 'name' in mega:
                             clean_name = mega["name"].replace('"', '\\"')
                             param_dict['name'] = f'name = "{clean_name}"'
+                        if 'graphical_culture' in mega:
+                             param_dict['graphical_culture'] = f'graphical_culture = {mega["graphical_culture"]}'
                         
-                        if 'graphical_culture' in mega: param_dict['graphical_culture'] = f'graphical_culture = {mega["graphical_culture"]}'
+                        # Use scaled coordinates for megastructure placement
+                        mega_x = float(mega.get('x', '0')) * scale_factor
+                        mega_y = float(mega.get('y', '0')) * scale_factor
+                        param_dict['orbit_distance'] = f'orbit_distance = {math.sqrt(mega_x**2 + mega_y**2):.2f}'
+                        param_dict['orbit_angle'] = f'orbit_angle = {math.degrees(math.atan2(-mega_y, -mega_x)):.2f}'
                         
-                        if 'x' in mega and 'y' in mega:
-                            param_dict['orbit_distance'] = f'orbit_distance = {mega_body["orbit"]:.2f}'
-                            param_dict['orbit_angle'] = f'orbit_angle = {mega_body["angle"]:.2f}'
-
                         order = ['type', 'name', 'graphical_culture', 'orbit_distance', 'orbit_angle']
                         params = [param_dict[key] for key in order if key in param_dict]
                         param_string = " ".join(params)
@@ -712,22 +781,21 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
 
                         mega_def = all_mega_definitions.get(mega_type, {})
                         star_flags = mega_def.get('star_flags', [])
-                        
                         for flag in star_flags:
                             f.write(f'\t\tset_star_flag = {flag}\n')
-                        
                 f.write('\t}\n')
-
+            
             f.write(f"}}\n\n")
 
-def find_body_in_system(system_bodies, target_id):
-    for body in system_bodies:
+def find_body_in_system(hierarchy_root, target_id):
+    if not hierarchy_root: return None
+    queue = [hierarchy_root]
+    while queue:
+        body = queue.pop(0)
         if body.get('id') == target_id:
             return body
-        if 'moons' in body:
-            found_moon = find_body_in_system(body['moons'], target_id)
-            if found_moon:
-                return found_moon
+        if 'children' in body:
+            queue.extend(body['children'])
     return None
 
 def write_on_actions_file(output_path, has_wormholes, has_planet_megas):
@@ -877,6 +945,12 @@ def main():
     clear_screen()
     print("--- Continuum Galaxy Parser ---")
     
+    script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in locals() else os.getcwd()
+
+    debug_file_path = os.path.join(script_dir, 'parserdebug.txt')
+    if os.path.exists(debug_file_path):
+        os.remove(debug_file_path)
+
     stellaris_user_dir = find_stellaris_user_dir()
     if not stellaris_user_dir or not os.path.isdir(stellaris_user_dir):
         print("FATAL ERROR: Could not find Stellaris user directory."); input("Press Enter to exit."); return
@@ -938,8 +1012,6 @@ def main():
                 print("Parsing cancelled."); input("Press Enter to exit."); return
     except Exception: print(f"Warning: Could not parse version string '{save_version_str}'.")
 
-    script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in locals() else os.getcwd()
-
     print("\nCleaning up old mod directories...")
     dirs_to_clean = [os.path.join(script_dir, d) for d in ['map', 'common', 'events']]
     for d in dirs_to_clean:
@@ -985,7 +1057,7 @@ def main():
             if original_planet_id and original_planet_id != '4294967295' and mega.get('origin') in systems_map:
                 planet_bound_megas.append(mega)
                 target_system = systems_map[mega['origin']]
-                host_planet = find_body_in_system(target_system.get('planets', []), original_planet_id)
+                host_planet = find_body_in_system(target_system.get('hierarchy_root'), original_planet_id)
                 if host_planet:
                     host_planet['attached_mega'] = mega
                 else:
