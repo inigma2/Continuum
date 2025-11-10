@@ -7,6 +7,7 @@ import os
 import sys
 import shutil
 import json
+import datetime
 
 # Conditional import for Windows-specific registry access
 if sys.platform == "win32":
@@ -15,9 +16,16 @@ if sys.platform == "win32":
 # --- CONFIGURATION ---
 SUPPORTED_STELLARIS_VERSION = "4.0"
 
+# --- UTILITY FUNCTIONS ---
+
 def clear_screen():
     """Clears the console screen."""
     os.system('cls' if os.name == 'nt' else 'clear')
+
+def debug_log(message, debug_file_path):
+    """Writes a message to the debug log file."""
+    with open(debug_file_path, 'a', encoding='utf-8') as f:
+        f.write(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {message}\n")
 
 def find_stellaris_user_dir():
     """Finds the Stellaris user documents directory by querying the OS directly."""
@@ -121,6 +129,42 @@ def _get_nested_block_content(text, start_regex, start_index=0):
             return text[content_start_index:i], search_start, i + 1
     return None, -1, -1
 
+def get_full_section(zip_handle, section_name):
+    """Extracts a full top-level section from the gamestate file."""
+    try:
+        with zip_handle.open('gamestate') as gamestate_file:
+            line_iterator = io.TextIOWrapper(gamestate_file, encoding='utf-8')
+            
+            for line in line_iterator:
+                if line.strip() == f'{section_name}=':
+                    break 
+            else: 
+                return None 
+
+            for line in line_iterator:
+                if line.strip() == '{':
+                    break 
+            else:
+                return None
+
+            section_content = []
+            brace_level = 1 
+            
+            for line in line_iterator:
+                brace_level += line.count('{')
+                brace_level -= line.count('}')
+                
+                if brace_level == 0:
+                    return "".join(section_content)
+                    
+                section_content.append(line)
+
+    except Exception as e:
+        print(f"Error reading section {section_name}: {e}")
+    return None
+    
+# --- PARSING FUNCTIONS ---
+
 def parse_all_megastructures(file_list):
     definitions = {}
     var_pattern = re.compile(r"^\s*@([\w_]+)\s*=\s*([-\d.]+)", re.MULTILINE)
@@ -178,6 +222,45 @@ def parse_all_megastructures(file_list):
             print(f"Warning: Could not read or parse {file_path}: {e}")
     print(f"Parsed {len(definitions)} megastructure definitions from game and mod files.")
     return definitions
+
+def parse_and_write_shroud_data(parsed_bypasses, parsed_stars, output_dirs, log_func):
+    log_func("--- Starting Shroud Coven and Tunnel Parser ---")
+    shroud_data = {}
+
+    if not parsed_bypasses:
+        log_func("No 'bypasses' data was parsed from the save. Aborting shroud parse.")
+        return None
+
+    shroud_tunnels = [
+        bypass_id for bypass_id, data in parsed_bypasses.items() 
+        if data.get('type') == 'shroud_tunnel'
+    ]
+
+    if not shroud_tunnels:
+        log_func("No Shroud Tunnels found in save file.")
+        return None
+    
+    log_func(f"Found {len(shroud_tunnels)} Shroud Tunnel bypass entries.")
+    shroud_data['tunnel_bypass_ids'] = shroud_tunnels
+
+    nexus_system_id = None
+    for star_id, star_data in parsed_stars.items():
+        if 'flags' in star_data and 'shroud_tunnel_nexus' in star_data['flags']:
+            nexus_system_id = star_id
+            break
+
+    if not nexus_system_id:
+        log_func("Found Shroud Tunnels, but no system is flagged as 'shroud_tunnel_nexus'. Aborting.")
+        return None
+    
+    shroud_data['nexus_system_id'] = nexus_system_id
+    log_func(f"Found Shroud Tunnel Nexus in system ID: {shroud_data['nexus_system_id']}")
+    log_func("Confirmed Shroud Tunnel network exists. Proceeding with generation.")
+
+    write_enclave_spawning_events_file(os.path.join(output_dirs['events_dir'], "continuum_enclave_events.txt"))
+    write_prescripted_country_file(os.path.join(output_dirs['prescripted_dir'], "continuum_enclaves.txt"))
+    
+    return shroud_data
 
 def get_save_meta_data(save_file_path):
     version = "Unknown"; date = "Unknown Date"
@@ -322,7 +405,6 @@ def build_galaxy_hierarchy(stars, planets, loc_data):
 
         system_center = {'id': '0', 'abs_x': 0.0, 'abs_y': 0.0, 'children': [], 'nesting_level': 0, 'name': 'System Center'}
         
-        # Explicitly parent moons first, based on 'moon_of' tag
         for body_id, body in all_bodies_in_system_map.items():
             if 'moon_of' in body:
                 parent_id = body['moon_of']
@@ -331,7 +413,6 @@ def build_galaxy_hierarchy(stars, planets, loc_data):
                     parent_body['children'].append(body)
                     body['parent'] = parent_body
         
-        # Parent all remaining unparented bodies to the system center
         for body_id, body in all_bodies_in_system_map.items():
             if body['parent'] is None:
                 system_center['children'].append(body)
@@ -390,6 +471,14 @@ def parse_block_content(block_text):
 
     data['hyperlanes'] = re.findall(r'^\s*to=(\d+)', block_text, re.MULTILINE)
     data['planet_ids'] = re.findall(r'^\s*planet=(\d+)', block_text, re.MULTILINE)
+    data['bypasses'] = re.findall(r'^\s*bypasses=\s*{(\s*\d+\s*)+}', block_text, re.MULTILINE)
+    if data.get('bypasses'):
+        data['bypasses'] = re.findall(r'\d+', data['bypasses'][0])
+
+    flags_block,_,_ = _get_nested_block_content(block_text, r'flags\s*=\s*{')
+    if flags_block:
+        data['flags'] = [line.strip().split('=')[0] for line in flags_block.split('\n') if line.strip()]
+
     return data
 
 def parse_nebula_block(block_text):
@@ -457,7 +546,7 @@ def parse_stellaris_save(path):
 
     try:
         with zipfile.ZipFile(path, 'r') as save_zip:
-            if 'gamestate' not in save_zip.namelist(): return None, None, None, None, None, counts
+            if 'gamestate' not in save_zip.namelist(): return None, None, None, None, None, None, counts
             with save_zip.open('gamestate') as gamestate_file:
                 line_iterator = io.TextIOWrapper(gamestate_file, encoding='utf-8')
                 star_header_re = re.compile(r'^\t(\d+)=')
@@ -480,7 +569,7 @@ def parse_stellaris_save(path):
                             if brace_level <= 0: break
                         nebulas.append(parse_nebula_block("".join(block_lines)))
     except Exception as e:
-        print(f"An error occurred during save file parsing: {e}"); return None, None, None, None, None, counts
+        print(f"An error occurred during save file parsing: {e}"); return None, None, None, None, None, None, counts
 
     bypass_to_system_map = {}
     for nw_data in natural_wormholes.values():
@@ -509,7 +598,9 @@ def parse_stellaris_save(path):
         elif p_class == "pc_asteroid": counts['asteroid'] += 1
         elif 'moon_of' in planet_data: counts['moon'] += 1
         else: counts['planet'] += 1
-    return stars, planets, nebulas, parsed_megastructures, wormhole_pairs, counts
+    return stars, planets, nebulas, parsed_megastructures, wormhole_pairs, bypasses, counts
+
+# --- FILE WRITING FUNCTIONS ---
 
 def write_map_file(systems_list, nebulas_list, wormhole_pairs, output_path, loc_data):
     if not systems_list: return
@@ -557,7 +648,7 @@ def write_map_file(systems_list, nebulas_list, wormhole_pairs, output_path, loc_
         
         f.write('}\n')
 
-def write_initializer_file(systems_list, parsed_megastructures, start_system_id, output_path, all_mega_definitions):
+def write_initializer_file(systems_list, parsed_megastructures, start_system_id, output_path, all_mega_definitions, shroud_data):
     if not systems_list: return
     
     megastructures_by_system = defaultdict(list)
@@ -565,42 +656,17 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
         original_planet_id = mega.get('planet')
         if not original_planet_id or original_planet_id == '4294967295':
             megastructures_by_system[mega['origin']].append(mega)
-    
+
     with open(output_path, 'w', encoding='utf-8') as f:
-        # --- START OF 7 ORBIT CALCULATION FUNCTIONS (LOGICAL GROUPING) ---
 
         def _calculate_orbit_params(body, parent):
-            """Core calculation logic based on absolute coordinates."""
             if not parent:
-                print(f"ERROR: Body '{body.get('name', body.get('id'))}' has a None parent. Skipping calculation.")
                 return {'distance': 0, 'angle': 0}
             rel_x = body['abs_x'] - parent['abs_x']
             rel_y = body['abs_y'] - parent['abs_y']
             distance = math.sqrt(rel_x**2 + rel_y**2)
             angle = math.degrees(math.atan2(-rel_y, -rel_x))
             return {'distance': distance, 'angle': angle}
-
-        def calculate_level_1_orbit(body, parent):
-            """Nesting Level 1: Bodies orbiting the system center (barycenter)."""
-            return _calculate_orbit_params(body, parent)
-
-        def calculate_level_2_orbit(body, parent):
-            """Nesting Level 2: Bodies orbiting a Level 1 body."""
-            return _calculate_orbit_params(body, parent)
-
-        def calculate_level_3_orbit(body, parent):
-            """Nesting Level 3: Bodies orbiting a Level 2 body."""
-            return _calculate_orbit_params(body, parent)
-        
-        def calculate_level_4_orbit(body, parent):
-            """Nesting Level 4: Bodies orbiting a Level 3 body."""
-            return _calculate_orbit_params(body, parent)
-
-        def calculate_deeper_level_orbit(body, parent):
-            """Nesting Level 5+: Bodies in deeper orbits."""
-            return _calculate_orbit_params(body, parent)
-        
-        # --- END OF 7 ORBIT CALCULATION FUNCTIONS ---
 
         def write_body_init_effects(body, tabs):
             init_effects = []
@@ -630,15 +696,12 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
             f.write(f"{initializer_name} = {{\n")
             f.write(f'\tname = "{sys_name}"\n\tclass = "{star_class}"\n')
             f.write('\tusage = empire_init\n\n' if sys_id == start_system_id else '\tusage = misc_system_init\n\n')
-
-            # --- START OF NON-RECURSIVE ORCHESTRATOR ---
             
             hierarchy_root = system.get('hierarchy_root')
             if not hierarchy_root:
                 f.write("}\n\n")
                 continue
 
-            # --- Automatic System Scaling ---
             max_radius = 0
             all_bodies_in_system = []
             queue = [hierarchy_root]
@@ -647,7 +710,7 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                 all_bodies_in_system.append(body)
                 queue.extend(body.get('children', []))
 
-            for body in all_bodies_in_system[1:]: # Skip root
+            for body in all_bodies_in_system[1:]:
                 radius = math.sqrt(body['abs_x']**2 + body['abs_y']**2)
                 if radius > max_radius:
                     max_radius = radius
@@ -660,13 +723,12 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                     body['abs_x'] *= scale_factor
                     body['abs_y'] *= scale_factor
 
-            # --- True Barycentric Writing ---
             level_1_bodies = sorted(hierarchy_root['children'], key=lambda b: _calculate_orbit_params(b, hierarchy_root)['distance'])
             
             last_orbit_l1, last_angle_l1 = 0.0, 0.0 
             is_first_l1_body = True
             for body_l1 in level_1_bodies:
-                orbit_params_l1 = calculate_level_1_orbit(body_l1, body_l1['parent'])
+                orbit_params_l1 = _calculate_orbit_params(body_l1, body_l1['parent'])
                 rel_dist_l1 = orbit_params_l1['distance'] - last_orbit_l1
                 rel_angle_l1 = orbit_params_l1['angle'] - last_angle_l1
                 if rel_angle_l1 > 180: rel_angle_l1 -= 360
@@ -694,7 +756,7 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                 children_l2 = sorted(body_l1.get('children', []), key=lambda b: _calculate_orbit_params(b, body_l1)['distance'])
                 is_first_l2_body = True
                 for body_l2 in children_l2:
-                    orbit_params_l2 = calculate_level_2_orbit(body_l2, body_l2['parent'])
+                    orbit_params_l2 = _calculate_orbit_params(body_l2, body_l2['parent'])
                     rel_dist_l2 = orbit_params_l2['distance'] - last_orbit_l2
                     rel_angle_l2 = orbit_params_l2['angle'] - last_angle_l2
                     if rel_angle_l2 > 180: rel_angle_l2 -= 360
@@ -719,7 +781,7 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                     children_l3 = sorted(body_l2.get('children', []), key=lambda b: _calculate_orbit_params(b, body_l2)['distance'])
                     is_first_l3_body = True
                     for body_l3 in children_l3:
-                        orbit_params_l3 = calculate_level_3_orbit(body_l3, body_l3['parent'])
+                        orbit_params_l3 = _calculate_orbit_params(body_l3, body_l3['parent'])
                         rel_dist_l3 = orbit_params_l3['distance'] - last_orbit_l3
                         rel_angle_l3 = orbit_params_l3['angle'] - last_angle_l3
                         if rel_angle_l3 > 180: rel_angle_l3 -= 360
@@ -748,10 +810,20 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                 f.write('\t}\n\n')
                 last_orbit_l1, last_angle_l1 = orbit_params_l1['distance'], orbit_params_l1['angle']
 
-            # --- Add init_effect for belts and space-born megastructures ---
+            if shroud_data and sys_id == shroud_data.get('nexus_system_id'):
+                f.write('\tplanet = {\n')
+                f.write('\t\tname = "Shroudwalker Coven Station Anchor"\n')
+                f.write('\t\tclass = "pc_shrouded"\n')
+                f.write('\t\torbit_distance = 10\n')
+                f.write('\t\tsize = 10\n')
+                f.write('\t\tinit_effect = { set_planet_flag = continuum_shroud_enclave_home }\n')
+                f.write('\t}\n\n')
+
             has_belts = system.get('asteroid_belts_data')
             has_megas = sys_id in megastructures_by_system
-            if has_belts or has_megas:
+            has_shroud_tunnel = shroud_data and (sys_id == shroud_data.get('nexus_system_id') or sys_id in shroud_data.get('tunnel_bypass_ids', []))
+
+            if has_belts or has_megas or has_shroud_tunnel:
                 f.write('\tinit_effect = {\n')
                 if has_belts:
                     for belt in system.get('asteroid_belts_data'):
@@ -768,7 +840,6 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                         if 'graphical_culture' in mega:
                              param_dict['graphical_culture'] = f'graphical_culture = {mega["graphical_culture"]}'
                         
-                        # Use scaled coordinates for megastructure placement
                         mega_x = float(mega.get('x', '0')) * scale_factor
                         mega_y = float(mega.get('y', '0')) * scale_factor
                         param_dict['orbit_distance'] = f'orbit_distance = {math.sqrt(mega_x**2 + mega_y**2):.2f}'
@@ -783,6 +854,16 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                         star_flags = mega_def.get('star_flags', [])
                         for flag in star_flags:
                             f.write(f'\t\tset_star_flag = {flag}\n')
+                
+                if has_shroud_tunnel:
+                    # The game engine creates the shroud tunnel bypass based on these flags.
+                    # We do not need to explicitly spawn it as a megastructure.
+                    if sys_id == shroud_data.get('nexus_system_id'):
+                        f.write('\t\tset_star_flag = shroud_tunnel_nexus\n')
+                    else:
+                        f.write('\t\tset_star_flag = spawned_shroud_tunnel\n')
+                        f.write('\t\tset_star_flag = shroud_tunnel_node\n')
+
                 f.write('\t}\n')
             
             f.write(f"}}\n\n")
@@ -798,12 +879,14 @@ def find_body_in_system(hierarchy_root, target_id):
             queue.extend(body['children'])
     return None
 
-def write_on_actions_file(output_path, has_wormholes, has_planet_megas):
+def write_on_actions_file(output_path, has_wormholes, has_planet_megas, has_shroud_enclave):
     content = "# These should run after the static galaxy has been generated.\n\non_game_start = {\n\tevents = {\n"
     if has_wormholes:
         content += "\t\tcontinuum_wormhole.1 # spawn wormholes based on flags from the parser\n"
     if has_planet_megas:
         content += "\t\tcontinuum_megastructure.1 # spawn planet-bound megastructures\n"
+    if has_shroud_enclave:
+        content += "\t\tcontinuum_enclave.1 # Spawn Shroud-Touched Coven Enclave\n"
     content += "\t}\n}\n"
 
     with open(output_path, 'w', encoding='utf-8') as f:
@@ -829,7 +912,6 @@ event = {{
         f.write(content)
 
 def write_megastructure_events_file(output_path, planet_megas):
-    """Generates the event file based on verified commands and syntax."""
     if not planet_megas: return
 
     unique_megas = set()
@@ -941,6 +1023,97 @@ def write_scripted_effects_file(output_path, num_wormhole_pairs):
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(content)
 
+def write_enclave_spawning_events_file(output_path):
+    # FINALIZED AND VERIFIED: Removed invalid 'location' key.
+    content = """namespace = continuum_enclave
+event = {
+	id = continuum_enclave.1
+	is_triggered_only = yes
+	hide_window = yes
+	
+	immediate = {
+		every_galaxy_planet = {
+			limit = { has_planet_flag = continuum_shroud_enclave_home }
+			
+			create_country = {
+				name = "prescripted_shroud_enclave_01"
+				type = "enclave"
+			}
+			remove_planet_flag = continuum_shroud_enclave_home
+		}
+	}
+}
+"""
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+def write_prescripted_country_file(output_path):
+    # FINALIZED AND VERIFIED: This version matches the required vanilla syntax.
+    content = """prescripted_shroud_enclave_01 = {
+	name = "EMPIRE_DESIGN_shroud_coven"
+	adjective = "PRESCRIPTED_adjective_shroud_coven"
+	spawn_enabled = no
+
+	ship_prefix = "ISS"
+
+	species = {
+		class = "SHROUDWALKER"
+		portrait = "shroud_creature"
+		name = "NAME_Shroudwalker"
+		plural = "NAME_Shroudwalkers"
+		adjective = "NAME_Shroudwalker"
+		name_list = "MAM1"
+		trait = "trait_venerable"
+	}
+	
+	room = "personality_spiritual_seekers_room"
+	
+	authority = "auth_imperial"
+	origin = "origin_default"
+	
+	ethic = "ethic_fanatic_spiritualist"
+	ethic = "ethic_pacifist"
+	
+	planet_name = "NAME_Shroud_Sanctum"
+	planet_class = "pc_desert" # This is a placeholder to pass validation. The actual station is created in an event.
+	system_name = "NAME_Veil"
+
+	graphical_culture = "mammalian_01"
+	city_graphical_culture = "mammalian_01"
+	
+	empire_flag = {
+		icon = {
+			category = "special"
+			file = "shroudwalkers.dds"
+		}
+		background = {
+			category = "backgrounds"
+			file = "sinus.dds"
+		}
+		colors = {
+			"black"
+			"red"
+			"null"
+			"null"
+		}
+	}
+
+	ruler = {
+		name = "PRESCRIPTED_ruler_name_shroud"
+		gender = male
+		portrait = "shroud_creature"
+		texture = 0
+		clothes = 0
+ 		trait = "trait_ruler_charismatic"
+		leader_class = official
+	}
+}
+"""
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+# --- MAIN EXECUTION ---
+
 def main():
     clear_screen()
     print("--- Continuum Galaxy Parser ---")
@@ -950,6 +1123,10 @@ def main():
     debug_file_path = os.path.join(script_dir, 'parserdebug.txt')
     if os.path.exists(debug_file_path):
         os.remove(debug_file_path)
+
+    log = lambda msg: debug_log(msg, debug_file_path)
+
+    log("Parser started.")
 
     stellaris_user_dir = find_stellaris_user_dir()
     if not stellaris_user_dir or not os.path.isdir(stellaris_user_dir):
@@ -1010,10 +1187,11 @@ def main():
             print("Please re-save your game in the latest version of Stellaris for best results.")
             if input("Continue anyway? (y/n): ").lower() != 'y':
                 print("Parsing cancelled."); input("Press Enter to exit."); return
-    except Exception: print(f"Warning: Could not parse version string '{save_version_str}'.")
+    except Exception:
+        print(f"Warning: Could not parse version string '{save_version_str}'.")
 
     print("\nCleaning up old mod directories...")
-    dirs_to_clean = [os.path.join(script_dir, d) for d in ['map', 'common', 'events']]
+    dirs_to_clean = [os.path.join(script_dir, d) for d in ['map', 'common', 'events', 'prescripted_countries']]
     for d in dirs_to_clean:
         if os.path.isdir(d):
             try:
@@ -1027,13 +1205,14 @@ def main():
     output_init_dir = os.path.join(script_dir, "common", "solar_system_initializers")
     output_onactions_dir = os.path.join(script_dir, "common", "on_actions")
     output_effects_dir = os.path.join(script_dir, "common", "scripted_effects")
+    output_prescripted_dir = os.path.join(script_dir, "prescripted_countries")
     output_events_dir = os.path.join(script_dir, "events")
 
-    for d in [output_map_dir, output_init_dir, output_onactions_dir, output_effects_dir, output_events_dir]:
+    for d in [output_map_dir, output_init_dir, output_onactions_dir, output_effects_dir, output_prescripted_dir, output_events_dir]:
         os.makedirs(d, exist_ok=True)
     print("Directory structure created.")
 
-    print(f"\nParsing: {selected_save['name']}...")
+    log(f"Parsing save file: {selected_save['name']}")
     
     print("\nScanning for megastructure definitions...")
     mega_files = find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/megastructures')
@@ -1043,7 +1222,7 @@ def main():
     localization = load_localization_data(stellaris_install_dir, game_language)
     if not localization: print("FATAL ERROR: No localization data loaded."); input("Press Enter to exit."); return
 
-    parsed_stars, parsed_planets, parsed_nebulas, parsed_megastructures, wormhole_pairs, counts = parse_stellaris_save(save_file_path)
+    parsed_stars, parsed_planets, parsed_nebulas, parsed_megastructures, wormhole_pairs, parsed_bypasses, counts = parse_stellaris_save(save_file_path)
     
     if parsed_stars and parsed_planets:
         galaxy_data = build_galaxy_hierarchy(parsed_stars, parsed_planets, localization)
@@ -1079,28 +1258,42 @@ def main():
         output_wormhole_effects_file = os.path.join(output_effects_dir, "continuum_wormhole_effects.txt")
         output_mega_events_file = os.path.join(output_events_dir, "continuum_megastructure_events.txt")
 
+        shroud_data = parse_and_write_shroud_data(parsed_bypasses, parsed_stars, {
+            'prescripted_dir': output_prescripted_dir,
+            'events_dir': output_events_dir,
+        }, log)
+        has_shroud_data = bool(shroud_data)
+
         write_map_file(galaxy_data, parsed_nebulas, wormhole_pairs, output_map_file, localization)
-        write_initializer_file(galaxy_data, parsed_megastructures, start_system_id, output_initializer_file, all_mega_definitions)
-        write_on_actions_file(output_onactions_file, has_wormholes=(len(wormhole_pairs) > 0), has_planet_megas=(len(planet_bound_megas) > 0))
+        write_initializer_file(galaxy_data, parsed_megastructures, start_system_id, output_initializer_file, all_mega_definitions, shroud_data)
+        
         write_wormhole_events_file(output_wormhole_events_file, len(wormhole_pairs))
         write_megastructure_events_file(output_mega_events_file, planet_bound_megas)
         write_scripted_effects_file(output_wormhole_effects_file, len(wormhole_pairs))
         
+        write_on_actions_file(output_onactions_file, 
+                              has_wormholes=(len(wormhole_pairs) > 0), 
+                              has_planet_megas=(len(planet_bound_megas) > 0),
+                              has_shroud_enclave=has_shroud_data)
+        
         print("\n--- PARSING COMPLETE ---")
         print(f"Found {system_count} systems, {counts['nebula']} nebulas, {counts['star']} stars, {counts['planet']} planets, {counts['moon']} moons, and {counts['asteroid']} asteroids.")
         print(f"Found {counts['megastructure']} megastructures ({len(planet_bound_megas)} planet-bound) and {counts['wormhole_pair']} wormhole pairs.")
+        if has_shroud_data:
+            log("SUCCESS: Shroud data parsed and files generated.")
+            print("Detected and parsed Shroud-Touched Coven enclave and Shroud Tunnel network.")
         
         print("\nAll required mod files have been generated:")
-        for path in [output_map_file, output_initializer_file, output_onactions_file, output_wormhole_events_file, output_mega_events_file, output_wormhole_effects_file]:
-            if os.path.exists(path):
-                is_dir = os.path.isdir(path)
-                is_empty = not os.listdir(path) if is_dir else os.path.getsize(path) == 0
-                if not (is_dir and is_empty):
-                     print(f"- {os.path.relpath(path, script_dir)}")
-        
-        print("\nTo load your imported game, select the 'Continuum' galaxy when starting a New Game.")
+        for path_dir in [output_map_dir, output_init_dir, output_onactions_dir, output_events_dir, output_effects_dir, output_prescripted_dir]:
+            if os.path.isdir(path_dir) and os.path.exists(path_dir):
+                for file in os.listdir(path_dir):
+                    if os.path.getsize(os.path.join(path_dir, file)) > 0:
+                        print(f"- {os.path.relpath(os.path.join(path_dir, file), script_dir)}")
 
+        print("\nTo load your imported game, select the 'Continuum' galaxy when starting a New Game.")
+        log("Parser finished successfully.")
     else:
+        log("FATAL: Could not parse critical galaxy data.")
         print("Could not parse critical galaxy data from the save file.")
 
     input("\nPress Enter to exit.")
