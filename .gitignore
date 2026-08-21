@@ -1,0 +1,13 @@
+# Parser output — never commit a player's generated galaxy
+map/
+common/
+events/
+prescripted_countries/
+parserdebug.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/

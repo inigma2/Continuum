@@ -1,9 +1,8 @@
-version="0.3.1"
+version="0.3.3"
 tags={
 	"Galaxy Generation"
 	"Events"
 }
 name="Continuum"
-supported_version="v4.0.23"
-path="E:/Users/inigma/Documents/Paradox Interactive/Stellaris/mod/continuum"
+supported_version="v4.4.*"
 remote_file_id="3554276594"

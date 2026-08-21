@@ -14,7 +14,20 @@ if sys.platform == "win32":
     import winreg
 
 # --- CONFIGURATION ---
-SUPPORTED_STELLARIS_VERSION = "4.0"
+SUPPORTED_STELLARIS_VERSION = "4.4"
+MOD_VERSION = "0.3.3"
+VANILLA_GALAXY_SHAPES = (
+    "elliptical",
+    "spiral_2",
+    "spiral_3",
+    "spiral_4",
+    "spiral_6",
+    "ring",
+    "bar",
+    "starburst",
+    "cartwheel",
+    "spoked",
+)
 
 # --- UTILITY FUNCTIONS ---
 
@@ -602,6 +615,40 @@ def parse_stellaris_save(path):
 
 # --- FILE WRITING FUNCTIONS ---
 
+def write_mod_descriptor_files(mod_dir, user_dir):
+    """Stellaris 4.4 rejects supported_version values like v4.* — it wants v4.4.*."""
+    descriptor_body = (
+        f'version="{MOD_VERSION}"\n'
+        'tags={\n'
+        '\t"Galaxy Generation"\n'
+        '\t"Events"\n'
+        '}\n'
+        'name="Continuum"\n'
+        f'supported_version="v{SUPPORTED_STELLARIS_VERSION}.*"\n'
+        'remote_file_id="3554276594"\n'
+    )
+    descriptor_path = os.path.join(mod_dir, 'descriptor.mod')
+    with open(descriptor_path, 'w', encoding='utf-8') as f:
+        f.write(descriptor_body)
+
+    if not user_dir:
+        return
+    launcher_path = os.path.join(user_dir, 'mod', 'continuum.mod')
+    launcher_dir = os.path.dirname(launcher_path)
+    if not os.path.isdir(launcher_dir):
+        return
+    mod_path = mod_dir.replace('\\', '/')
+    with open(launcher_path, 'w', encoding='utf-8') as f:
+        f.write(descriptor_body.replace(
+            'remote_file_id="3554276594"\n',
+            f'path="{mod_path}"\nremote_file_id="3554276594"\n'
+        ))
+
+def write_localisation_file(output_path):
+    # Stellaris YAML requires a UTF-8 BOM and a leading space on each key.
+    with open(output_path, 'w', encoding='utf-8-sig') as f:
+        f.write('l_english:\n continuum:0 "Continuum"\n')
+
 def write_map_file(systems_list, nebulas_list, wormhole_pairs, output_path, loc_data):
     if not systems_list: return
 
@@ -610,13 +657,33 @@ def write_map_file(systems_list, nebulas_list, wormhole_pairs, output_path, loc_
         flag = f"continuum_wormhole_{i}"
         wormhole_flags_by_system[pair[0]] = flag
         wormhole_flags_by_system[pair[1]] = flag
-    
+
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write('static_galaxy_scenario = {\n')
-        f.write('\tname = "Continuum"\n\tpriority = 200\n\tsupports_shape = elliptical\n\n')
-        f.write('\tnum_empires = { min = 1 max = 1 }\n\tnum_empire_default = 1\n\n')
-        f.write('\trandom_hyperlanes = no\n\tcore_radius = 0\n\n')
-        f.write('\t# --- System Definitions ---\n')
+        f.write('\tname = "continuum"\n')
+        f.write('\tpriority = 10\n')
+        f.write('\tnum_empires = { min = 1 max = 1 }\n')
+        f.write('\tnum_empire_default = 1\n')
+        f.write('\tfallen_empire_default = 0\n')
+        f.write('\tfallen_empire_max = 0\n')
+        f.write('\tmarauder_empire_default = 0\n')
+        f.write('\tmarauder_empire_max = 0\n')
+        f.write('\tnomad_empire_default = 0\n')
+        f.write('\tnomad_empire_max = 0\n')
+        f.write('\tadvanced_empire_default = 0\n')
+        f.write('\tcolonizable_planet_odds = 1.0\n')
+        f.write('\tprimitive_odds = 0\n')
+        f.write('\tcrisis_strength = 0.5\n')
+        f.write('\textra_crisis_strength = { 10 25 }\n')
+        f.write('\tnum_wormhole_pairs = { min = 0 max = 0 }\n')
+        f.write('\tnum_wormhole_pairs_default = 0\n')
+        f.write('\tnum_gateways = { min = 0 max = 0 }\n')
+        f.write('\tnum_gateways_default = 0\n')
+        f.write('\trandom_hyperlanes = no\n')
+        f.write('\tcore_radius = 0\n\n')
+        for shape in VANILLA_GALAXY_SHAPES:
+            f.write(f'\tsupports_shape = {shape}\n')
+        f.write('\n\t# --- System Definitions ---\n')
         for system in systems_list:
             sys_id, sys_name = system.get('id'), system.get('name', f"Sys_{system.get('id')}").replace('"', '')
             sys_x, sys_y = system.get('x', '0'), system.get('y', '0')
@@ -1191,7 +1258,7 @@ def main():
         print(f"Warning: Could not parse version string '{save_version_str}'.")
 
     print("\nCleaning up old mod directories...")
-    dirs_to_clean = [os.path.join(script_dir, d) for d in ['map', 'common', 'events', 'prescripted_countries']]
+    dirs_to_clean = [os.path.join(script_dir, d) for d in ['map', 'common', 'events', 'prescripted_countries', 'localisation']]
     for d in dirs_to_clean:
         if os.path.isdir(d):
             try:
@@ -1207,8 +1274,9 @@ def main():
     output_effects_dir = os.path.join(script_dir, "common", "scripted_effects")
     output_prescripted_dir = os.path.join(script_dir, "prescripted_countries")
     output_events_dir = os.path.join(script_dir, "events")
+    output_loc_dir = os.path.join(script_dir, "localisation", "english")
 
-    for d in [output_map_dir, output_init_dir, output_onactions_dir, output_effects_dir, output_prescripted_dir, output_events_dir]:
+    for d in [output_map_dir, output_init_dir, output_onactions_dir, output_effects_dir, output_prescripted_dir, output_events_dir, output_loc_dir]:
         os.makedirs(d, exist_ok=True)
     print("Directory structure created.")
 
@@ -1266,6 +1334,8 @@ def main():
 
         write_map_file(galaxy_data, parsed_nebulas, wormhole_pairs, output_map_file, localization)
         write_initializer_file(galaxy_data, parsed_megastructures, start_system_id, output_initializer_file, all_mega_definitions, shroud_data)
+        write_localisation_file(os.path.join(output_loc_dir, "continuum_l_english.yml"))
+        write_mod_descriptor_files(script_dir, stellaris_user_dir)
         
         write_wormhole_events_file(output_wormhole_events_file, len(wormhole_pairs))
         write_megastructure_events_file(output_mega_events_file, planet_bound_megas)
@@ -1284,7 +1354,7 @@ def main():
             print("Detected and parsed Shroud-Touched Coven enclave and Shroud Tunnel network.")
         
         print("\nAll required mod files have been generated:")
-        for path_dir in [output_map_dir, output_init_dir, output_onactions_dir, output_events_dir, output_effects_dir, output_prescripted_dir]:
+        for path_dir in [output_map_dir, output_init_dir, output_onactions_dir, output_events_dir, output_effects_dir, output_prescripted_dir, output_loc_dir]:
             if os.path.isdir(path_dir) and os.path.exists(path_dir):
                 for file in os.listdir(path_dir):
                     if os.path.getsize(os.path.join(path_dir, file)) > 0:
