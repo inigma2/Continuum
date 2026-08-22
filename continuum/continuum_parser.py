@@ -15,7 +15,7 @@ if sys.platform == "win32":
 
 # --- CONFIGURATION ---
 SUPPORTED_STELLARIS_VERSION = "4.4"
-MOD_VERSION = "0.3.3"
+MOD_VERSION = "0.4.0"
 VANILLA_GALAXY_SHAPES = (
     "elliptical",
     "spiral_2",
@@ -254,7 +254,15 @@ def parse_and_write_shroud_data(parsed_bypasses, parsed_stars, output_dirs, log_
         return None
     
     log_func(f"Found {len(shroud_tunnels)} Shroud Tunnel bypass entries.")
+    shroud_tunnels_set = set(shroud_tunnels)
+    node_system_ids = []
+    for star_id, star_data in parsed_stars.items():
+        for bp in star_data.get('bypasses') or []:
+            if str(bp) in shroud_tunnels_set or bp in shroud_tunnels_set:
+                node_system_ids.append(str(star_id))
     shroud_data['tunnel_bypass_ids'] = shroud_tunnels
+    shroud_data['node_system_ids'] = node_system_ids
+    log_func(f"Mapped shroud tunnel bypasses to systems: {node_system_ids}")
 
     nexus_system_id = None
     for star_id, star_data in parsed_stars.items():
@@ -268,11 +276,7 @@ def parse_and_write_shroud_data(parsed_bypasses, parsed_stars, output_dirs, log_
     
     shroud_data['nexus_system_id'] = nexus_system_id
     log_func(f"Found Shroud Tunnel Nexus in system ID: {shroud_data['nexus_system_id']}")
-    log_func("Confirmed Shroud Tunnel network exists. Proceeding with generation.")
-
-    write_enclave_spawning_events_file(os.path.join(output_dirs['events_dir'], "continuum_enclave_events.txt"))
-    write_prescripted_country_file(os.path.join(output_dirs['prescripted_dir'], "continuum_enclaves.txt"))
-    
+    log_func("Confirmed Shroud Tunnel network exists. Coven will spawn from the nexus initializer (vanilla create_shroudwalker_enclave_country).")
     return shroud_data
 
 def get_save_meta_data(save_file_path):
@@ -449,6 +453,11 @@ def build_galaxy_hierarchy(stars, planets, loc_data):
                 resolve_all_names(child)
         
         resolve_all_names(system_center)
+
+        # Player set_name hits the star body; galactic_object often keeps the old system name.
+        star_bodies = [b for b in system_center.get('children', []) if b.get('body_type') == 'star' and b.get('name')]
+        if star_bodies:
+            system['name'] = star_bodies[0]['name']
 
         print(f"System {system.get('name', 'Unknown')}: Processed hierarchy.")
         hierarchical_systems.append(system)
@@ -877,21 +886,64 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                 f.write('\t}\n\n')
                 last_orbit_l1, last_angle_l1 = orbit_params_l1['distance'], orbit_params_l1['angle']
 
-            if shroud_data and sys_id == shroud_data.get('nexus_system_id'):
+            if shroud_data and str(sys_id) == str(shroud_data.get('nexus_system_id')):
                 f.write('\tplanet = {\n')
                 f.write('\t\tname = "Shroudwalker Coven Station Anchor"\n')
                 f.write('\t\tclass = "pc_shrouded"\n')
                 f.write('\t\torbit_distance = 10\n')
                 f.write('\t\tsize = 10\n')
-                f.write('\t\tinit_effect = { set_planet_flag = continuum_shroud_enclave_home }\n')
+                f.write('\t\tinit_effect = {\n')
+                f.write('\t\t\tset_carrier_flag = shroudwalker_enclave_planet\n')
+                f.write('\t\t\tsave_event_target_as = shroudwalker_enclave_planet\n')
+                f.write('\t\t\tclear_deposits = yes\n')
+                f.write('\t\t\tprevent_anomaly = yes\n')
+                f.write('\t\t\tif = {\n')
+                f.write('\t\t\t\tlimit = { NOT = { exists = event_target:shroudwalker_enclave_country } }\n')
+                f.write('\t\t\t\tcreate_species = {\n')
+                f.write('\t\t\t\t\thomeworld = this\n')
+                f.write('\t\t\t\t\tname = random\n')
+                f.write('\t\t\t\t\tclass = SHROUDWALKER\n')
+                f.write('\t\t\t\t\tnamelist = NECROID1\n')
+                f.write('\t\t\t\t\tportrait = random\n')
+                f.write('\t\t\t\t\ttraits = {\n')
+                f.write('\t\t\t\t\t\tideal_planet_class = pc_habitat\n')
+                f.write('\t\t\t\t\t\ttrait = trait_psionic\n')
+                f.write('\t\t\t\t\t\ttrait = random_traits\n')
+                f.write('\t\t\t\t\t}\n')
+                f.write('\t\t\t\t}\n')
+                f.write('\t\t\t\tlast_created_species = { save_event_target_as = shroudwalker_enclave_species }\n')
+                f.write('\t\t\t\tcreate_shroudwalker_enclave_country = yes\n')
+                f.write('\t\t\t\tsolar_system = { save_global_event_target_as = shroudwalker_enclave_system }\n')
+                f.write('\t\t\t}\n')
+                f.write('\t\t\telse = {\n')
+                f.write('\t\t\t\tevent_target:shroudwalker_enclave_country = { create_shroudwalker_enclave_starbase = yes }\n')
+                f.write('\t\t\t}\n')
+                f.write('\t\t}\n')
                 f.write('\t}\n\n')
 
             has_belts = system.get('asteroid_belts_data')
             has_megas = sys_id in megastructures_by_system
-            has_shroud_tunnel = shroud_data and (sys_id == shroud_data.get('nexus_system_id') or sys_id in shroud_data.get('tunnel_bypass_ids', []))
+            node_ids = set(shroud_data.get('node_system_ids') or []) if shroud_data else set()
+            has_shroud_tunnel = shroud_data and (
+                str(sys_id) == str(shroud_data.get('nexus_system_id'))
+                or str(sys_id) in node_ids
+            )
 
-            if has_belts or has_megas or has_shroud_tunnel:
+            copy_flags = [
+                fl for fl in (system.get('flags') or [])
+                if fl in ('lgate', 'lcluster1', 'lcluster', 'lcluster_lgate', 'terminal_egress', 'shroudwalker_enclave_system', 'enclave')
+                or str(fl).startswith('lcluster')
+            ]
+            mega_needs_lgate = has_megas and any(m.get('type') == 'lgate_base' for m in megastructures_by_system.get(sys_id, []))
+            if mega_needs_lgate and 'lgate' not in copy_flags:
+                copy_flags.append('lgate')
+
+            if has_belts or has_megas or has_shroud_tunnel or copy_flags:
                 f.write('\tinit_effect = {\n')
+                for fl in copy_flags:
+                    f.write(f'\t\tset_star_flag = {fl}\n')
+                    if fl == 'lcluster1':
+                        f.write('\t\tsave_global_event_target_as = lcluster1\n')
                 if has_belts:
                     for belt in system.get('asteroid_belts_data'):
                         belt_type = belt.get('type', 'rocky_asteroid_belt')
@@ -925,8 +977,10 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                 if has_shroud_tunnel:
                     # The game engine creates the shroud tunnel bypass based on these flags.
                     # We do not need to explicitly spawn it as a megastructure.
-                    if sys_id == shroud_data.get('nexus_system_id'):
+                    if str(sys_id) == str(shroud_data.get('nexus_system_id')):
                         f.write('\t\tset_star_flag = shroud_tunnel_nexus\n')
+                        f.write('\t\tsave_global_event_target_as = shroud_tunnel_nexus\n')
+                        f.write('\t\tspawn_natural_wormhole = { bypass_type = shroud_tunnel random_pos = no orbit_angle = 360 orbit_distance = 15 }\n')
                     else:
                         f.write('\t\tset_star_flag = spawned_shroud_tunnel\n')
                         f.write('\t\tset_star_flag = shroud_tunnel_node\n')
@@ -946,16 +1000,94 @@ def find_body_in_system(hierarchy_root, target_id):
             queue.extend(body['children'])
     return None
 
-def write_on_actions_file(output_path, has_wormholes, has_planet_megas, has_shroud_enclave):
+def write_on_actions_file(output_path, has_wormholes, has_planet_megas, has_shroud_enclave, has_open_lgates=False):
     content = "# These should run after the static galaxy has been generated.\n\non_game_start = {\n\tevents = {\n"
-    if has_wormholes:
-        content += "\t\tcontinuum_wormhole.1 # spawn wormholes based on flags from the parser\n"
     if has_planet_megas:
         content += "\t\tcontinuum_megastructure.1 # spawn planet-bound megastructures\n"
+    if has_open_lgates:
+        content += "\t\tcontinuum_lgate.1 # activate L-gates if they were open in the save\n"
+    if has_wormholes:
+        content += "\t\tcontinuum_wormhole.1 # spawn wormholes based on flags from the parser\n"
     if has_shroud_enclave:
-        content += "\t\tcontinuum_enclave.1 # Spawn Shroud-Touched Coven Enclave\n"
+        # Coven country is created in the nexus initializer.
+        content += "\t\tcontinuum_shroud.1 # spawn and link shroud tunnel nodes to the nexus\n"
     content += "\t}\n}\n"
 
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+def write_lgate_events_file(output_path):
+    content = """namespace = continuum_lgate
+event = {
+	id = continuum_lgate.1
+	is_triggered_only = yes
+	hide_window = yes
+
+	immediate = {
+		if = {
+			limit = { has_global_flag = continuum_lgates_done }
+		}
+		else = {
+			set_global_flag = continuum_lgates_done
+			set_global_flag = lgates_activated_globally
+			set_global_flag = l_cluster_opened
+			every_megastructure = {
+				limit = { is_megastructure_type = lgate_base }
+				activate_gateway = this
+				set_megastructure_flag = lgate_activated
+			}
+		}
+	}
+}
+"""
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+def gamestate_has_key(save_path, key):
+    with zipfile.ZipFile(save_path, 'r') as save_zip:
+        data = save_zip.read('gamestate').decode('utf-8', 'replace')
+    return f"{key}=" in data
+
+def write_shroud_tunnel_events_file(output_path):
+    content = """namespace = continuum_shroud
+event = {
+	id = continuum_shroud.1
+	is_triggered_only = yes
+	hide_window = yes
+
+	immediate = {
+		if = {
+			limit = { has_global_flag = continuum_shroud_tunnels_done }
+		}
+		else = {
+			set_global_flag = continuum_shroud_tunnels_done
+			random_system = {
+				limit = { has_star_flag = shroud_tunnel_nexus }
+				save_event_target_as = continuum_shroud_nexus
+			}
+			every_system = {
+				limit = {
+					has_star_flag = shroud_tunnel_node
+					NOT = { has_star_flag = shroud_tunnel_nexus }
+				}
+				if = {
+					limit = { has_natural_wormhole = no }
+					spawn_natural_wormhole = {
+						bypass_type = shroud_tunnel
+						random_pos = yes
+					}
+				}
+				if = {
+					limit = { exists = event_target:continuum_shroud_nexus }
+					event_target:continuum_shroud_nexus = {
+						link_wormholes = prev
+					}
+				}
+			}
+		}
+	}
+}
+"""
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(content)
 
@@ -972,7 +1104,13 @@ event = {{
 	hide_window = yes
 	
 	immediate = {{
-{event_calls}	}}
+		if = {{
+			limit = {{ has_global_flag = continuum_wormholes_done }}
+		}}
+		else = {{
+			set_global_flag = continuum_wormholes_done
+{event_calls}		}}
+	}}
 }}
 """
     with open(output_path, 'w', encoding='utf-8') as f:
@@ -1234,17 +1372,33 @@ def main():
             save_list_for_selection.append(save)
             print(f"  [{len(save_list_for_selection)}] {save['date']} {save['name']}")
     
-    choice = -1
-    while True:
-        try:
-            choice_str = input(f"\nEnter a Selection or 'q' to quit: ").lower()
-            if choice_str == 'q': print("Exiting."); return
-            choice = int(choice_str)
-            if 1 <= choice <= len(save_list_for_selection): break
-            else: print("Invalid number.")
-        except ValueError: print("Invalid input.")
+    argv_save = sys.argv[1] if len(sys.argv) > 1 else None
+    selected_save = None
+    if argv_save:
+        needle = argv_save.replace('/', '\\').lower()
+        matches = [s for s in save_list_for_selection if needle in s['name'].replace('/', '\\').lower() or needle in s['path'].replace('/', '\\').lower()]
+        if len(matches) == 1:
+            selected_save = matches[0]
+            print(f"\nUsing save from argument: {selected_save['name']}")
+        elif not matches:
+            print(f"No save matched '{argv_save}'."); return
+        else:
+            print(f"Multiple saves matched '{argv_save}':")
+            for s in matches:
+                print(f"  {s['name']}")
+            return
 
-    selected_save = save_list_for_selection[choice - 1]
+    if selected_save is None:
+        choice = -1
+        while True:
+            try:
+                choice_str = input(f"\nEnter a Selection or 'q' to quit: ").lower()
+                if choice_str == 'q': print("Exiting."); return
+                choice = int(choice_str)
+                if 1 <= choice <= len(save_list_for_selection): break
+                else: print("Invalid number.")
+            except ValueError: print("Invalid input.")
+        selected_save = save_list_for_selection[choice - 1]
     save_file_path, save_version_str = selected_save['path'], selected_save['version']
     
     try:
@@ -1331,6 +1485,10 @@ def main():
             'events_dir': output_events_dir,
         }, log)
         has_shroud_data = bool(shroud_data)
+        has_open_lgates = gamestate_has_key(save_file_path, 'lgates_activated_globally')
+        if has_open_lgates:
+            log("Save has lgates_activated_globally. Post will activate L-gates on game start.")
+            print("Detected open L-Gate network. Continuum will activate L-gates after galaxy gen.")
 
         write_map_file(galaxy_data, parsed_nebulas, wormhole_pairs, output_map_file, localization)
         write_initializer_file(galaxy_data, parsed_megastructures, start_system_id, output_initializer_file, all_mega_definitions, shroud_data)
@@ -1340,11 +1498,16 @@ def main():
         write_wormhole_events_file(output_wormhole_events_file, len(wormhole_pairs))
         write_megastructure_events_file(output_mega_events_file, planet_bound_megas)
         write_scripted_effects_file(output_wormhole_effects_file, len(wormhole_pairs))
+        if has_shroud_data:
+            write_shroud_tunnel_events_file(os.path.join(output_events_dir, "continuum_shroud_events.txt"))
+        if has_open_lgates:
+            write_lgate_events_file(os.path.join(output_events_dir, "continuum_lgate_events.txt"))
         
         write_on_actions_file(output_onactions_file, 
                               has_wormholes=(len(wormhole_pairs) > 0), 
                               has_planet_megas=(len(planet_bound_megas) > 0),
-                              has_shroud_enclave=has_shroud_data)
+                              has_shroud_enclave=has_shroud_data,
+                              has_open_lgates=has_open_lgates)
         
         print("\n--- PARSING COMPLETE ---")
         print(f"Found {system_count} systems, {counts['nebula']} nebulas, {counts['star']} stars, {counts['planet']} planets, {counts['moon']} moons, and {counts['asteroid']} asteroids.")
@@ -1366,7 +1529,8 @@ def main():
         log("FATAL: Could not parse critical galaxy data.")
         print("Could not parse critical galaxy data from the save file.")
 
-    input("\nPress Enter to exit.")
+    if sys.stdin.isatty() and len(sys.argv) <= 1:
+        input("\nPress Enter to exit.")
 
 if __name__ == "__main__":
     main()
