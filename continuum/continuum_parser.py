@@ -15,7 +15,7 @@ if sys.platform == "win32":
 
 # --- CONFIGURATION ---
 SUPPORTED_STELLARIS_VERSION = "4.4"
-MOD_VERSION = "0.5.0"
+MOD_VERSION = "0.6.0"
 VANILLA_GALAXY_SHAPES = (
     "elliptical",
     "spiral_2",
@@ -238,6 +238,59 @@ def parse_all_megastructures(file_list):
 
 # game_start.50 reapplies these from nebula blobs; copying them double-stacks.
 SKIP_COPIED_MODIFIERS = frozenset({"nebula_cloaking", "turbulent_nebula"})
+
+# Star flags vanilla unique inits actually set. Static maps skip those inits, so we copy
+# the flags and spawn from them in continuum_npc.1. Do not use leftover space_critter as
+# a generic amoeba bucket — crystals, tiyanki, and amoebas all share that flag.
+NPC_STAR_FLAGS = frozenset({
+    "guardians_artists_system",
+    "guardians_curators_system",
+    "guardians_traders_system",
+    "salvager_enclave_system",
+    "guardians_dragon_system",
+    "guardians_technosphere_system",
+    "guardians_wraith_system",
+    "guardians_horror_system",
+    "guardians_dreadnought_system",
+    "guardians_hive_system",
+    "guardians_fortress_system",
+    "guardians_stellarite_system",
+    "guardians_hatchling_system",
+    "horror_system",
+    "sphere_system",
+    "elderly_tiyanki_system",
+    "space_critter_system",
+    "crystal_system",
+    "crystal_home_system",
+    "elite_system",
+    "blue_system",
+    "blue2_system",
+    "green_system",
+    "green2_system",
+    "red_system",
+    "red2_system",
+    "shield_system",
+    "void_system",
+    "void3_system",
+    "amoeba_1_system",
+    "amoeba_2_system",
+    "amoeba_3_system",
+    "amoeba_4_system",
+    "amoeba_home_system",
+    "drone_system_1",
+    "drone_system_2",
+    "drone_system_3",
+    "drone_system_4",
+    "drone_home_system",
+    "drone_destroyer_system",
+    "tiyanki_home_system",
+    "tiyanki_spawn_system",
+    "tiyanki_graveyard_system",
+    "voidworms_system",
+    "hostile_system",
+    "guardian",
+    "antique_threat_system",
+})
 
 def parse_script_keys(file_list):
     """Top-level script keys (`name = {`) from vanilla/mod txt files."""
@@ -807,6 +860,7 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
         allowed_modifiers = modifier_keys or set()
         skipped_deposits = defaultdict(int)
         skipped_modifiers = defaultdict(int)
+        npc_flags_copied = defaultdict(int)
 
         def write_body_init_effects(body, tabs):
             init_effects = []
@@ -1021,6 +1075,8 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                 fl for fl in (system.get('flags') or [])
                 if fl in ('lgate', 'lcluster1', 'lcluster', 'lcluster_lgate', 'terminal_egress', 'shroudwalker_enclave_system', 'enclave')
                 or str(fl).startswith('lcluster')
+                or fl in NPC_STAR_FLAGS
+                or str(fl).startswith('guardians_')
             ]
             mega_needs_lgate = has_megas and any(m.get('type') == 'lgate_base' for m in megastructures_by_system.get(sys_id, []))
             if mega_needs_lgate and 'lgate' not in copy_flags:
@@ -1030,6 +1086,8 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                 f.write('\tinit_effect = {\n')
                 for fl in copy_flags:
                     f.write(f'\t\tset_star_flag = {fl}\n')
+                    if fl in NPC_STAR_FLAGS or str(fl).startswith('guardians_'):
+                        npc_flags_copied[fl] += 1
                     if fl == 'lcluster1':
                         f.write('\t\tsave_global_event_target_as = lcluster1\n')
                 if has_belts:
@@ -1084,6 +1142,10 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
             print(f"Skipped unknown deposits: {dict(skipped_deposits)}")
         if skipped_modifiers:
             print(f"Skipped unknown or nebula-reapplied modifiers: {dict(skipped_modifiers)}")
+        if npc_flags_copied:
+            print("NPC/fauna star flags copied:")
+            for fl, n in sorted(npc_flags_copied.items(), key=lambda x: (-x[1], x[0])):
+                print(f"  {fl}: {n}")
 
 def find_body_in_system(hierarchy_root, target_id):
     if not hierarchy_root: return None
@@ -1096,7 +1158,7 @@ def find_body_in_system(hierarchy_root, target_id):
             queue.extend(body['children'])
     return None
 
-def write_on_actions_file(output_path, has_wormholes, has_planet_megas, has_shroud_enclave, has_open_lgates=False):
+def write_on_actions_file(output_path, has_wormholes, has_planet_megas, has_shroud_enclave, has_open_lgates=False, has_npcs=True):
     content = "# These should run after the static galaxy has been generated.\n\non_game_start = {\n\tevents = {\n"
     if has_planet_megas:
         content += "\t\tcontinuum_megastructure.1 # spawn planet-bound megastructures\n"
@@ -1107,6 +1169,8 @@ def write_on_actions_file(output_path, has_wormholes, has_planet_megas, has_shro
     if has_shroud_enclave:
         # Coven country is created in the nexus initializer.
         content += "\t\tcontinuum_shroud.1 # spawn and link shroud tunnel nodes to the nexus\n"
+    if has_npcs:
+        content += "\t\tcontinuum_npc.1 # enclaves, leviathans, ambient fauna from save flags\n"
     content += "\t}\n}\n"
 
     with open(output_path, 'w', encoding='utf-8') as f:
@@ -1143,6 +1207,640 @@ def gamestate_has_key(save_path, key):
     with zipfile.ZipFile(save_path, 'r') as save_zip:
         data = save_zip.read('gamestate').decode('utf-8', 'replace')
     return f"{key}=" in data
+
+def _crystal_pack_effect(effect_name, fleet_name, large, medium, small):
+    # Literal quoted designs. Clausewitz $PARAM$ next to name = "" ate the rest of the line.
+    return f'''{effect_name} = {{
+	create_crystal_country = yes
+	random_system_planet = {{
+		limit = {{ is_star = no }}
+		event_target:crystal_country = {{
+			create_fleet = {{
+				name = "{fleet_name}"
+				effect = {{
+					set_owner = event_target:crystal_country
+					while = {{
+						count = 5
+						create_ship = {{
+							name = random
+							design = "{large}"
+						}}
+					}}
+					while = {{
+						count = 8
+						create_ship = {{
+							name = random
+							design = "{medium}"
+						}}
+					}}
+					while = {{
+						count = 12
+						create_ship = {{
+							name = random
+							design = "{small}"
+						}}
+					}}
+					set_location = PREVPREV
+					set_fleet_stance = aggressive
+					set_aggro_range_measure_from = self
+					set_aggro_range = 150
+				}}
+			}}
+		}}
+	}}
+}}
+
+'''
+
+def write_npc_effects_file(output_path):
+    content = (
+        _crystal_pack_effect(
+            "continuum_spawn_crystal_blue",
+            "NAME_Sapphire_Lurkers",
+            "NAME_Large_Crystal_Entity_Blue",
+            "NAME_Medium_Crystal_Entity_Blue",
+            "NAME_Small_Crystal_Entity_Blue",
+        )
+        + _crystal_pack_effect(
+            "continuum_spawn_crystal_green",
+            "NAME_Emerald_Roamers",
+            "NAME_Large_Crystal_Entity_Green",
+            "NAME_Medium_Crystal_Entity_Green",
+            "NAME_Small_Crystal_Entity_Green",
+        )
+        + _crystal_pack_effect(
+            "continuum_spawn_crystal_red",
+            "NAME_Ruby_Stack",
+            "NAME_Large_Crystal_Entity_Red",
+            "NAME_Medium_Crystal_Entity_Red",
+            "NAME_Small_Crystal_Entity_Red",
+        )
+        + _crystal_pack_effect(
+            "continuum_spawn_crystal_elite",
+            "NAME_Sapphire_Guardians",
+            "NAME_Large_Crystal_Entity_Blue_Elite",
+            "NAME_Medium_Crystal_Entity_Blue_Elite",
+            "NAME_Small_Crystal_Entity_Blue_Elite",
+        )
+        + r'''continuum_spawn_drone_pack = {
+	create_drone_country = yes
+	random_system_planet = {
+		limit = { is_star = no }
+		event_target:drone_country = {
+			create_fleet = {
+				name = "NAME_Ancient_Mining_Drones"
+				effect = {
+					set_owner = event_target:drone_country
+					while = { count = 8 create_ship = { name = "" design = "NAME_Ancient_Mining_Drone" } }
+					while = { count = 4 create_ship = { name = "" design = "NAME_Ancient_Combat_Drone" } }
+					set_location = PREVPREV
+					set_fleet_stance = aggressive
+					set_aggro_range_measure_from = self
+					set_aggro_range = 150
+				}
+			}
+		}
+	}
+}
+
+continuum_spawn_drone_destroyer_pack = {
+	create_drone_country = yes
+	random_system_planet = {
+		limit = { is_star = no }
+		event_target:drone_country = {
+			create_fleet = {
+				name = "NAME_Asset_Protection_Unit"
+				effect = {
+					set_owner = event_target:drone_country
+					while = { count = 7 create_ship = { name = "" design = "NAME_Ancient_Combat_Drone" } }
+					while = { count = 3 create_ship = { name = "" design = "NAME_Ancient_Destroyer" } }
+					set_location = PREVPREV
+					set_fleet_stance = aggressive
+					set_aggro_range_measure_from = self
+					set_aggro_range = 150
+				}
+			}
+		}
+	}
+}
+
+continuum_spawn_amoeba_pack = {
+	create_amoeba_country = yes
+	random_system_planet = {
+		limit = { is_star = no }
+		event_target:amoeba_country = {
+			create_fleet = {
+				name = "NAME_Space_Amoeba_plural"
+				settings = { garrison = yes }
+				effect = {
+					set_owner = event_target:amoeba_country
+					while = { count = 4 create_ship = { name = "" design = "NAME_Large_Space_Organism_Zebra" } }
+					while = { count = 6 create_ship = { name = "" design = "NAME_Small_Space_Organism_Zebra" } }
+					set_location = PREVPREV
+					set_fleet_stance = aggressive
+					set_aggro_range_measure_from = self
+					set_aggro_range = 150
+				}
+			}
+		}
+	}
+}
+
+continuum_spawn_tiyanki_pack = {
+	create_tiyanki_country = yes
+	random_system_planet = {
+		limit = { is_star = no }
+		event_target:tiyanki_country = {
+			create_fleet = {
+				name = "NAME_Tiyanki_Space_Whale"
+				effect = {
+					set_owner = event_target:tiyanki_country
+					create_ship = { name = "" design = "NAME_Tiyanki_Cow" }
+					create_ship = { name = "" design = "NAME_Tiyanki_Bull" }
+					create_ship = { name = "" design = "NAME_Tiyanki_Calf" }
+					set_location = PREVPREV
+					set_fleet_stance = passive
+				}
+			}
+		}
+	}
+}
+
+continuum_spawn_cloud_pack = {
+	create_cloud_country = yes
+	random_system_planet = {
+		limit = { is_star = yes }
+		event_target:cloud_country = {
+			create_fleet = {
+				name = "NAME_Void_Cloud"
+				effect = {
+					set_owner = event_target:cloud_country
+					create_ship = { name = "" design = "NAME_Cloud_Entity" }
+					set_location = PREVPREV
+					set_fleet_stance = aggressive
+					set_aggro_range_measure_from = self
+					set_aggro_range = 500
+				}
+			}
+		}
+	}
+}
+'''
+    )
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+def write_npc_events_file(output_path):
+    content = r'''namespace = continuum_npc
+event = {
+	id = continuum_npc.1
+	is_triggered_only = yes
+	hide_window = yes
+	immediate = {
+		if = {
+			limit = { has_global_flag = continuum_npcs_done }
+		}
+		else = {
+			set_global_flag = continuum_npcs_done
+			every_system = {
+				limit = { has_star_flag = guardians_curators_system }
+				random_system_planet = {
+					limit = { is_star = yes }
+					if = {
+						limit = { NOT = { exists = event_target:curator_enclave_country } }
+						create_species = {
+							name = random
+							class = random_non_machine
+							portrait = random
+							traits = { ideal_planet_class = pc_habitat trait = random_traits }
+						}
+						create_country = {
+							name = "NAME_Curator_Order"
+							adjective = "NAME_Curator_adj"
+							type = enclave
+							authority = "auth_oligarchic"
+							civics = { civic = civic_ancient_preservers }
+							origin = "origin_default"
+							species = last_created_species
+							flag = {
+								icon = { category = "enclaves" file = "enclaves_flag_curator.dds" }
+								background = { category = "backgrounds" file = "vertical.dds" }
+								colors = { "blue" "dark_blue" "null" "null" }
+							}
+							ethos = { ethic = ethic_fanatic_materialist ethic = ethic_pacifist }
+							ignore_initial_colony_error = yes
+						}
+						last_created_country = {
+							set_country_flag = curator_enclave_country
+							set_graphical_culture = mammalian_01
+							save_global_event_target_as = curator_enclave_country
+							create_fleet = {
+								name = "NAME_Curator_Alpha_Enclave"
+								settings = { spawn_debris = no }
+								effect = {
+									set_owner = prev
+									create_ship = { name = random design = "NAME_Curator_Enclave_Station" graphical_culture = prev }
+									set_location = { target = prevprev distance = 100 }
+									save_global_event_target_as = curator_alpha_station
+								}
+							}
+						}
+						solar_system = { save_global_event_target_as = curator_enclave_system }
+					}
+					else_if = {
+						limit = { NOT = { exists = event_target:curator_sigma_station } }
+						event_target:curator_enclave_country = {
+							create_fleet = {
+								name = "NAME_Curator_Sigma_Enclave"
+								settings = { spawn_debris = no }
+								effect = {
+									set_owner = prev
+									create_ship = { name = random design = "NAME_Curator_Enclave_Station" graphical_culture = prev }
+									set_location = { target = prevprev distance = 120 }
+									save_global_event_target_as = curator_sigma_station
+								}
+							}
+						}
+					}
+					else = {
+						event_target:curator_enclave_country = {
+							create_fleet = {
+								name = "NAME_Curator_Lambda_Enclave"
+								settings = { spawn_debris = no }
+								effect = {
+									set_owner = prev
+									create_ship = { name = random design = "NAME_Curator_Enclave_Station" graphical_culture = prev }
+									set_location = { target = prevprev distance = 120 }
+								}
+							}
+						}
+					}
+				}
+			}
+			every_system = {
+				limit = { has_star_flag = guardians_artists_system }
+				random_system_planet = {
+					limit = { is_star = yes }
+					if = {
+						limit = { NOT = { exists = event_target:artist_enclave_country } }
+						create_species = {
+							name = random
+							class = random_non_machine
+							portrait = random
+							traits = { ideal_planet_class = pc_habitat trait = random_traits }
+							homeworld = this
+						}
+						create_country = {
+							name = "NAME_Artisan_Troupe"
+							adjective = "NAME_Artisan_adj"
+							type = enclave
+							authority = "auth_democratic"
+							civics = { civic = civic_artist_collective }
+							origin = "origin_default"
+							species = last_created_species
+							flag = {
+								icon = { category = "enclaves" file = "enclaves_flag_artist.dds" }
+								background = { category = "backgrounds" file = "vertical.dds" }
+								colors = { "dark_purple" "purple" "null" "null" }
+							}
+							ethos = { ethic = ethic_fanatic_xenophile ethic = ethic_spiritualist }
+							ignore_initial_colony_error = yes
+						}
+						last_created_country = {
+							save_global_event_target_as = artist_enclave_country
+							set_country_flag = artist_enclave_country
+							set_graphical_culture = mammalian_01
+							create_fleet = {
+								name = "NAME_Ars_Artem"
+								settings = { spawn_debris = no }
+								effect = {
+									set_owner = prev
+									create_ship = { name = random design = "NAME_Artist_Enclave_Station" graphical_culture = prev }
+									set_location = { target = prevprev distance = 90 }
+								}
+							}
+						}
+						solar_system = { save_global_event_target_as = artisan_enclave_system }
+					}
+					else = {
+						event_target:artist_enclave_country = {
+							create_fleet = {
+								name = "NAME_Ars_Artem"
+								settings = { spawn_debris = no }
+								effect = {
+									set_owner = prev
+									create_ship = { name = random design = "NAME_Artist_Enclave_Station" graphical_culture = prev }
+									set_location = { target = prevprev distance = 90 }
+								}
+							}
+						}
+					}
+				}
+			}
+			every_system = {
+				limit = { has_star_flag = guardians_traders_system }
+				random_system_planet = {
+					limit = { is_star = no }
+					if = {
+						limit = { NOT = { exists = event_target:xuracorp_country } }
+						create_species = {
+							name = NAME_Xuri
+							plural = NAME_Xuri_plural
+							class = random_non_machine
+							portrait = random
+							traits = { ideal_planet_class = pc_habitat trait = trait_thrifty }
+						}
+						create_country = {
+							name = "NAME_XuraCorp"
+							adjective = NAME_XuraCorp_adj
+							type = enclave
+							authority = "auth_oligarchic"
+							civics = { civic = civic_trading_conglomerate }
+							origin = "origin_default"
+							species = last_created_species
+							flag = {
+								icon = { category = "enclaves" file = "enclaves_flag_trader.dds" }
+								background = { category = "backgrounds" file = "00_solid.dds" }
+								colors = { "green" "dark_green" "null" "null" }
+							}
+							ethos = { ethic = ethic_xenophile ethic = ethic_fanatic_materialist }
+							ignore_initial_colony_error = yes
+						}
+						last_created_country = {
+							set_country_flag = trader_enclave_country
+							set_country_flag = trader_enclave_country_1
+							set_graphical_culture = mammalian_01
+							save_global_event_target_as = xuracorp_country
+							create_fleet = {
+								name = "NAME_XuraCorp_HQ"
+								settings = { spawn_debris = no }
+								effect = {
+									set_owner = prev
+									create_ship = { name = random design = "NAME_Trader_Enclave_Station" graphical_culture = prev }
+									set_location = { target = prevprev distance = 90 }
+								}
+							}
+						}
+						solar_system = { save_global_event_target_as = xuracorp_enclave_system }
+					}
+					else_if = {
+						limit = { NOT = { exists = event_target:riggan_country } }
+						create_species = {
+							name = "NAME_Riggan"
+							plural = NAME_Riggan_plural
+							class = random_non_machine
+							portrait = random
+							traits = { ideal_planet_class = pc_habitat trait = trait_thrifty }
+						}
+						create_country = {
+							name = "NAME_Riggan_Commerce_Exchange"
+							adjective = NAME_Riggan_adj
+							type = enclave
+							authority = "auth_oligarchic"
+							civics = { civic = civic_trading_conglomerate }
+							origin = "origin_default"
+							species = last_created_species
+							flag = {
+								icon = { category = "enclaves" file = "enclaves_flag_trader.dds" }
+								background = { category = "backgrounds" file = "circle.dds" }
+								colors = { "green" "dark_green" "null" "null" }
+							}
+							ethos = { ethic = ethic_xenophile ethic = ethic_materialist ethic = ethic_egalitarian }
+							ignore_initial_colony_error = yes
+						}
+						last_created_country = {
+							set_country_flag = trader_enclave_country
+							set_country_flag = trader_enclave_country_2
+							set_graphical_culture = mammalian_01
+							save_global_event_target_as = riggan_country
+							create_fleet = {
+								name = "NAME_Grand_Bazaar"
+								settings = { spawn_debris = no }
+								effect = {
+									set_owner = prev
+									create_ship = { name = random design = "NAME_Trader_Enclave_Station" graphical_culture = prev }
+									set_location = { target = prevprev distance = 90 }
+								}
+							}
+						}
+						solar_system = { save_global_event_target_as = riggan_enclave_system }
+					}
+					else_if = {
+						limit = { NOT = { exists = event_target:muutagan_country } }
+						create_species = {
+							name = "NAME_Muutagan"
+							plural = NAME_Muutagan_plural
+							class = random_non_machine
+							portrait = random
+							traits = { ideal_planet_class = pc_habitat trait = trait_thrifty }
+						}
+						create_country = {
+							name = "NAME_Muutagan_Merchant_Guild"
+							adjective = NAME_Muutagan_adj
+							type = enclave
+							authority = "auth_oligarchic"
+							civics = { civic = civic_trading_conglomerate }
+							origin = "origin_default"
+							species = last_created_species
+							flag = {
+								icon = { category = "enclaves" file = "enclaves_flag_trader.dds" }
+								background = { category = "backgrounds" file = "double_hemispheres.dds" }
+								colors = { "green" "dark_green" "null" "null" }
+							}
+							ethos = { ethic = ethic_xenophile ethic = ethic_materialist ethic = ethic_egalitarian }
+							ignore_initial_colony_error = yes
+						}
+						last_created_country = {
+							set_country_flag = trader_enclave_country
+							set_country_flag = trader_enclave_country_3
+							set_graphical_culture = mammalian_01
+							save_global_event_target_as = muutagan_country
+							create_fleet = {
+								name = "NAME_Muutag_Station"
+								settings = { spawn_debris = no }
+								effect = {
+									set_owner = prev
+									create_ship = { name = random design = "NAME_Trader_Enclave_Station" graphical_culture = prev }
+									set_location = { target = prevprev distance = 90 }
+								}
+							}
+						}
+						solar_system = { save_global_event_target_as = muutagan_enclave_system }
+					}
+				}
+			}
+			every_system = {
+				limit = { has_star_flag = salvager_enclave_system }
+				random_system_planet = {
+					limit = { is_star = no }
+					if = {
+						limit = { NOT = { exists = event_target:salvager_enclave_country } }
+						set_carrier_flag = salvager_enclave_planet
+						save_global_event_target_as = salvager_enclave_planet
+						create_species = {
+							name = random
+							class = SALVAGER
+							namelist = MAM4
+							portrait = random
+							traits = { ideal_planet_class = pc_habitat trait = random_traits }
+							homeworld = this
+						}
+						last_created_species = { save_event_target_as = salvager_enclave_species }
+						create_salvager_enclave_country = yes
+						solar_system = { save_global_event_target_as = salvager_enclave_system }
+					}
+				}
+			}
+			every_system = {
+				limit = { has_star_flag = guardians_dragon_system }
+				random_system_planet = {
+					limit = { is_star = no }
+					save_global_event_target_as = guardian_dragon_planet
+					create_country = {
+						name = "NAME_Voidwyrm"
+						type = guardian_dragon
+						flag = {
+							icon = { category = "zoological" file = "flag_zoological_5.dds" }
+							background = { category = "backgrounds" file = "00_solid.dds" }
+							colors = { "red" "red" "null" "null" }
+						}
+					}
+					last_created_country = {
+						save_global_event_target_as = guardian_dragon_country
+						set_country_flag = dragon_country
+					}
+					create_fleet = {
+						name = "NAME_Ether_Drake"
+						settings = { spawn_debris = no is_boss = yes }
+						effect = {
+							set_owner = event_target:guardian_dragon_country
+							create_ship = { name = "NAME_Avice" design = "NAME_Grand_Dragon" }
+							set_fleet_flag = dragon_fleet
+							set_location = prev
+							set_fleet_stance = aggressive
+							set_aggro_range_measure_from = self
+							set_aggro_range = 500
+						}
+					}
+				}
+			}
+			every_system = {
+				limit = { OR = { has_star_flag = guardians_technosphere_system has_star_flag = sphere_system } }
+				random_system_planet = {
+					limit = { is_star = yes }
+					create_country = {
+						name = "NAME_Infinity_Machine"
+						type = guardian_sphere
+						flag = {
+							icon = { category = "zoological" file = "flag_zoological_5.dds" }
+							background = { category = "backgrounds" file = "00_solid.dds" }
+							colors = { "red" "red" "null" "null" }
+						}
+					}
+					last_created_country = {
+						save_global_event_target_as = guardian_technosphere_country
+						set_graphical_culture = techno
+						if = {
+							limit = { NOT = { has_modifier = technosphere_power } }
+							add_modifier = { modifier = technosphere_power days = -1 }
+						}
+					}
+					create_fleet = {
+						name = "NAME_The_Infinity_Machine"
+						settings = { spawn_debris = no is_boss = yes }
+						effect = {
+							set_owner = event_target:guardian_technosphere_country
+							create_ship = { name = "NAME_I_O" design = "NAME_Infinity_Machine" }
+							set_fleet_flag = technosphere_fleet
+							set_location = { target = prevprev distance = 80 }
+							set_fleet_stance = passive
+							save_global_event_target_as = technosphere_ship
+						}
+					}
+				}
+			}
+			every_system = {
+				limit = { has_star_flag = guardians_wraith_system }
+				random_system_planet = {
+					limit = { is_star = yes }
+					set_carrier_flag = guardians_wraith_pulsar
+				}
+			}
+			every_system = {
+				limit = { OR = { has_star_flag = blue_system has_star_flag = blue2_system } }
+				continuum_spawn_crystal_blue = yes
+			}
+			every_system = {
+				limit = { OR = { has_star_flag = green_system has_star_flag = green2_system } }
+				continuum_spawn_crystal_green = yes
+			}
+			every_system = {
+				limit = { OR = { has_star_flag = red_system has_star_flag = red2_system } }
+				continuum_spawn_crystal_red = yes
+			}
+			every_system = {
+				limit = { has_star_flag = crystal_home_system }
+				continuum_spawn_crystal_elite = yes
+			}
+			every_system = {
+				limit = {
+					OR = {
+						has_star_flag = drone_system_1
+						has_star_flag = drone_system_2
+						has_star_flag = drone_system_3
+						has_star_flag = drone_system_4
+						has_star_flag = drone_home_system
+					}
+				}
+				continuum_spawn_drone_pack = yes
+			}
+			every_system = {
+				limit = { has_star_flag = drone_destroyer_system }
+				continuum_spawn_drone_destroyer_pack = yes
+			}
+			every_system = {
+				limit = {
+					OR = {
+						has_star_flag = amoeba_1_system
+						has_star_flag = amoeba_2_system
+						has_star_flag = amoeba_3_system
+						has_star_flag = amoeba_4_system
+						has_star_flag = amoeba_home_system
+					}
+				}
+				continuum_spawn_amoeba_pack = yes
+			}
+			every_system = {
+				limit = {
+					OR = {
+						has_star_flag = tiyanki_home_system
+						has_star_flag = tiyanki_spawn_system
+					}
+				}
+				continuum_spawn_tiyanki_pack = yes
+			}
+			every_system = {
+				limit = { has_star_flag = void_system }
+				continuum_spawn_cloud_pack = yes
+			}
+			every_system = {
+				limit = { has_star_flag = voidworms_system }
+				create_voidworms_country = yes
+				if = {
+					limit = { exists = event_target:voidworms_country }
+					random_system_planet = {
+						limit = { is_star = no }
+						save_event_target_as = continuum_voidworm_loc
+						create_voidworms_small_fleet = { LOCATION = event_target:continuum_voidworm_loc }
+					}
+				}
+			}
+		}
+	}
+}
+'''
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(content)
 
 def write_shroud_tunnel_events_file(output_path):
     content = """namespace = continuum_shroud
@@ -1601,12 +2299,15 @@ def main():
             write_shroud_tunnel_events_file(os.path.join(output_events_dir, "continuum_shroud_events.txt"))
         if has_open_lgates:
             write_lgate_events_file(os.path.join(output_events_dir, "continuum_lgate_events.txt"))
+        write_npc_effects_file(os.path.join(output_effects_dir, "continuum_npc_effects.txt"))
+        write_npc_events_file(os.path.join(output_events_dir, "continuum_npc_events.txt"))
         
         write_on_actions_file(output_onactions_file, 
                               has_wormholes=(len(wormhole_pairs) > 0), 
                               has_planet_megas=(len(planet_bound_megas) > 0),
                               has_shroud_enclave=has_shroud_data,
-                              has_open_lgates=has_open_lgates)
+                              has_open_lgates=has_open_lgates,
+                              has_npcs=True)
         
         print("\n--- PARSING COMPLETE ---")
         print(f"Found {system_count} systems, {counts['nebula']} nebulas, {counts['star']} stars, {counts['planet']} planets, {counts['moon']} moons, and {counts['asteroid']} asteroids.")

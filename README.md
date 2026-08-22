@@ -4,7 +4,7 @@ A Stellaris galaxy converter — one galaxy to rule them all.
 
 Turn a finished (or mid-game) save into a playable **static galaxy** for a new game. The Python parser reads your `.sav` and writes systems, hyperlanes, stars, planets, moons, asteroids, belts, nebulas, megastructures, and wormholes into the Continuum mod folder.
 
-- **Current:** 0.5.0 for Stellaris **4.4.*** (Pegasus)
+- **Current:** 0.6.0 for Stellaris **4.4.*** (Pegasus)
 - Workshop: https://steamcommunity.com/sharedfiles/filedetails/?id=3554276594
 - Roadmap: https://steamcommunity.com/workshop/filedetails/discussion/3554276594/596284386694022138/
 
@@ -26,9 +26,20 @@ Copy `continuum_parser.py`, `descriptor.mod`, `thumbnail.png`, and `localisation
 4. From that folder: `python continuum_parser.py`
 5. Pick the save. Wait for it to finish.
 6. New Game → pick an empire → **Galaxy Size: Continuum** (any galaxy shape).
-7. Turn extra wormholes / gateways / hyperlanes off if you want a near-exact import. Console `observe` to inspect before playing.
+7. Turn extra wormholes / gateways / hyperlanes off if you want a near-exact import. Console `play 0` then `observe` to inspect before playing.
 
 `supported_version` is `v4.4.*`. Values like `v4.*` are rejected by 4.4 and can hide the mod.
+
+## 0.6.0
+
+Copies **unique NPCs and ambient fauna** from the save (vanilla unique system inits do not run on a static map):
+
+- Artisan Troupe, Curator Order, trader enclaves (XuraCorp / Riggan / Muutagan), Salvagers
+- Ether Drake, Infinity Machine
+- Crystals, mining drones, amoebas, tiyanki, void clouds on the flagged systems
+- Horror / Spectral Wraith stay on vanilla later events (system entry / mid-game)
+
+Does not copy player empires, fallen empires, or starbases.
 
 ## 0.5.0
 
