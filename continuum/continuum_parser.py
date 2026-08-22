@@ -15,7 +15,7 @@ if sys.platform == "win32":
 
 # --- CONFIGURATION ---
 SUPPORTED_STELLARIS_VERSION = "4.4"
-MOD_VERSION = "0.4.0"
+MOD_VERSION = "0.5.0"
 VANILLA_GALAXY_SHAPES = (
     "elliptical",
     "spiral_2",
@@ -235,6 +235,44 @@ def parse_all_megastructures(file_list):
             print(f"Warning: Could not read or parse {file_path}: {e}")
     print(f"Parsed {len(definitions)} megastructure definitions from game and mod files.")
     return definitions
+
+# game_start.50 reapplies these from nebula blobs; copying them double-stacks.
+SKIP_COPIED_MODIFIERS = frozenset({"nebula_cloaking", "turbulent_nebula"})
+
+def parse_script_keys(file_list):
+    """Top-level script keys (`name = {`) from vanilla/mod txt files."""
+    keys = set()
+    key_re = re.compile(r"^([A-Za-z][\w]*)\s*=\s*\{", re.MULTILINE)
+    for file_path in file_list:
+        if not file_path.endswith(".txt"):
+            continue
+        try:
+            with open(file_path, "r", encoding="utf-8-sig", errors="replace") as f:
+                text = f.read()
+        except Exception as e:
+            print(f"Warning: Could not read {file_path}: {e}")
+            continue
+        stripped = []
+        for line in text.splitlines():
+            if "#" in line:
+                line = line[: line.index("#")]
+            stripped.append(line)
+        keys.update(key_re.findall("\n".join(stripped)))
+    return keys
+
+def parse_timed_modifiers(block_text):
+    content, _, _ = _get_nested_block_content(block_text, r"timed_modifier\s*=\s*{")
+    if not content:
+        return []
+    out = []
+    for m in re.finditer(r'modifier="([^"]+)"', content):
+        name = m.group(1)
+        window = content[m.end() : m.end() + 96]
+        days_m = re.search(r"days=(-?\d+)", window)
+        days = int(days_m.group(1)) if days_m else -1
+        if days == -1:
+            out.append(name)
+    return out
 
 def parse_and_write_shroud_data(parsed_bypasses, parsed_stars, output_dirs, log_func):
     log_func("--- Starting Shroud Coven and Tunnel Parser ---")
@@ -501,6 +539,14 @@ def parse_block_content(block_text):
     if flags_block:
         data['flags'] = [line.strip().split('=')[0] for line in flags_block.split('\n') if line.strip()]
 
+    deposits_block, _, _ = _get_nested_block_content(block_text, r'deposits\s*=\s*{')
+    if deposits_block:
+        data['deposit_ids'] = re.findall(r'\d+', deposits_block)
+
+    timed = parse_timed_modifiers(block_text)
+    if timed:
+        data['timed_modifiers'] = timed
+
     return data
 
 def parse_nebula_block(block_text):
@@ -564,6 +610,7 @@ def parse_keyed_section(line_iterator, header_regex, block_parser_func):
 def parse_stellaris_save(path):
     stars, planets, nebulas, bypasses, natural_wormholes = {}, {}, [], {}, {}
     megastructures_raw = {}
+    deposits_raw = {}
     counts = defaultdict(int)
 
     try:
@@ -574,6 +621,7 @@ def parse_stellaris_save(path):
                 star_header_re = re.compile(r'^\t(\d+)=')
                 planet_header_re = re.compile(r'^\t\t(\d+)=')
                 generic_header_re = re.compile(r'^\t(\d+)=')
+                deposit_header_re = re.compile(r'^\t*(\d+)=')
 
                 for line in line_iterator:
                     stripped_line = line.strip()
@@ -582,6 +630,7 @@ def parse_stellaris_save(path):
                     elif stripped_line == 'megastructures=': next(line_iterator); megastructures_raw = parse_keyed_section(line_iterator, generic_header_re, parse_generic_block)
                     elif stripped_line == 'bypasses=': next(line_iterator); bypasses = parse_keyed_section(line_iterator, generic_header_re, parse_generic_block)
                     elif stripped_line == 'natural_wormholes=': next(line_iterator); natural_wormholes = parse_keyed_section(line_iterator, generic_header_re, parse_generic_block)
+                    elif stripped_line == 'deposit=': next(line_iterator); deposits_raw = parse_keyed_section(line_iterator, deposit_header_re, parse_generic_block)
                     elif stripped_line == 'nebula=':
                         block_lines = [line]; brace_level = line.count('{') - line.count('}')
                         if brace_level <= 0 and '{' in line: nebulas.append(parse_nebula_block("".join(block_lines))); continue
@@ -610,6 +659,16 @@ def parse_stellaris_save(path):
             processed_bypasses.add(bypass_id); processed_bypasses.add(partner_id)
     
     parsed_megastructures = [m for m in megastructures_raw.values() if 'type' in m and 'origin' in m and m['origin'] != '4294967295']
+
+    deposit_by_id = {did: data.get('type') for did, data in deposits_raw.items() if data.get('type')}
+    for pdata in planets.values():
+        types = []
+        for did in pdata.get('deposit_ids') or []:
+            dtype = deposit_by_id.get(did)
+            if dtype:
+                types.append(dtype)
+        if types:
+            pdata['deposit_types'] = types
     
     counts['wormhole_pair'] = len(wormhole_pairs)
     counts['nebula'] = len(nebulas)
@@ -724,7 +783,7 @@ def write_map_file(systems_list, nebulas_list, wormhole_pairs, output_path, loc_
         
         f.write('}\n')
 
-def write_initializer_file(systems_list, parsed_megastructures, start_system_id, output_path, all_mega_definitions, shroud_data):
+def write_initializer_file(systems_list, parsed_megastructures, start_system_id, output_path, all_mega_definitions, shroud_data, deposit_keys=None, modifier_keys=None):
     if not systems_list: return
     
     megastructures_by_system = defaultdict(list)
@@ -744,8 +803,17 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
             angle = math.degrees(math.atan2(-rel_y, -rel_x))
             return {'distance': distance, 'angle': angle}
 
+        allowed_deposits = deposit_keys or set()
+        allowed_modifiers = modifier_keys or set()
+        skipped_deposits = defaultdict(int)
+        skipped_modifiers = defaultdict(int)
+
         def write_body_init_effects(body, tabs):
             init_effects = []
+            # Vanilla rolls deposits and planet modifiers after the planet is created.
+            # Snapshot by wiping those, then re-adding what the save had.
+            init_effects.append(f'{tabs}\tclear_deposits = yes')
+            init_effects.append(f'{tabs}\tclear_planet_modifiers = yes')
             if 'attached_mega' in body:
                 mega = body['attached_mega']
                 mega_type = mega.get("type")
@@ -757,6 +825,18 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                     init_effects.append(f'{tabs}\tset_variable = {{ which = continuum_mega_name value = "{clean_name}" }}')
             if body.get("planet_class") == "pc_habitat":
                 init_effects.append(f'{tabs}\tset_planet_flag = habitat')
+            for dtype in body.get("deposit_types") or []:
+                if dtype in allowed_deposits:
+                    init_effects.append(f'{tabs}\tadd_deposit = {dtype}')
+                else:
+                    skipped_deposits[dtype] += 1
+            for mod in body.get("timed_modifiers") or []:
+                if mod in SKIP_COPIED_MODIFIERS:
+                    continue
+                if mod in allowed_modifiers:
+                    init_effects.append(f'{tabs}\tadd_modifier = {{ modifier = "{mod}" days = -1 }}')
+                else:
+                    skipped_modifiers[mod] += 1
             
             if init_effects:
                 f.write(f'{tabs}init_effect = {{\n')
@@ -928,6 +1008,14 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                 str(sys_id) == str(shroud_data.get('nexus_system_id'))
                 or str(sys_id) in node_ids
             )
+            system_modifiers = []
+            for mod in system.get('timed_modifiers') or []:
+                if mod in SKIP_COPIED_MODIFIERS:
+                    continue
+                if mod in allowed_modifiers:
+                    system_modifiers.append(mod)
+                else:
+                    skipped_modifiers[mod] += 1
 
             copy_flags = [
                 fl for fl in (system.get('flags') or [])
@@ -938,7 +1026,7 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
             if mega_needs_lgate and 'lgate' not in copy_flags:
                 copy_flags.append('lgate')
 
-            if has_belts or has_megas or has_shroud_tunnel or copy_flags:
+            if has_belts or has_megas or has_shroud_tunnel or copy_flags or system_modifiers:
                 f.write('\tinit_effect = {\n')
                 for fl in copy_flags:
                     f.write(f'\t\tset_star_flag = {fl}\n')
@@ -985,9 +1073,17 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                         f.write('\t\tset_star_flag = spawned_shroud_tunnel\n')
                         f.write('\t\tset_star_flag = shroud_tunnel_node\n')
 
+                for mod in system_modifiers:
+                    f.write(f'\t\tadd_modifier = {{ modifier = "{mod}" days = -1 }}\n')
+
                 f.write('\t}\n')
             
             f.write(f"}}\n\n")
+
+        if skipped_deposits:
+            print(f"Skipped unknown deposits: {dict(skipped_deposits)}")
+        if skipped_modifiers:
+            print(f"Skipped unknown or nebula-reapplied modifiers: {dict(skipped_modifiers)}")
 
 def find_body_in_system(hierarchy_root, target_id):
     if not hierarchy_root: return None
@@ -1439,6 +1535,9 @@ def main():
     print("\nScanning for megastructure definitions...")
     mega_files = find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/megastructures')
     all_mega_definitions = parse_all_megastructures(mega_files)
+    deposit_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/deposits'))
+    modifier_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/static_modifiers'))
+    print(f"Loaded {len(deposit_keys)} deposit types and {len(modifier_keys)} static modifiers.")
 
     game_language = get_stellaris_language(stellaris_user_dir)
     localization = load_localization_data(stellaris_install_dir, game_language)
@@ -1491,7 +1590,7 @@ def main():
             print("Detected open L-Gate network. Continuum will activate L-gates after galaxy gen.")
 
         write_map_file(galaxy_data, parsed_nebulas, wormhole_pairs, output_map_file, localization)
-        write_initializer_file(galaxy_data, parsed_megastructures, start_system_id, output_initializer_file, all_mega_definitions, shroud_data)
+        write_initializer_file(galaxy_data, parsed_megastructures, start_system_id, output_initializer_file, all_mega_definitions, shroud_data, deposit_keys, modifier_keys)
         write_localisation_file(os.path.join(output_loc_dir, "continuum_l_english.yml"))
         write_mod_descriptor_files(script_dir, stellaris_user_dir)
         

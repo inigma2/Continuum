@@ -4,7 +4,7 @@ A Stellaris galaxy converter — one galaxy to rule them all.
 
 Turn a finished (or mid-game) save into a playable **static galaxy** for a new game. The Python parser reads your `.sav` and writes systems, hyperlanes, stars, planets, moons, asteroids, belts, nebulas, megastructures, and wormholes into the Continuum mod folder.
 
-- **Current:** 0.4.0 for Stellaris **4.4.*** (Pegasus)
+- **Current:** 0.5.0 for Stellaris **4.4.*** (Pegasus)
 - Workshop: https://steamcommunity.com/sharedfiles/filedetails/?id=3554276594
 - Roadmap: https://steamcommunity.com/workshop/filedetails/discussion/3554276594/596284386694022138/
 
@@ -29,6 +29,10 @@ Copy `continuum_parser.py`, `descriptor.mod`, `thumbnail.png`, and `localisation
 7. Turn extra wormholes / gateways / hyperlanes off if you want a near-exact import. Console `observe` to inspect before playing.
 
 `supported_version` is `v4.4.*`. Values like `v4.*` are rejected by 4.4 and can hide the mod.
+
+## 0.5.0
+
+Copies planet **deposits** and permanent **planet/system modifiers** from the save (`clear_deposits` / `clear_planet_modifiers`, then re-add). Does not copy districts, buildings, jobs, or pops.
 
 ## 0.4.0
 
