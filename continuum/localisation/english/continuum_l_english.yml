@@ -1,2 +1,11 @@
 ﻿l_english:
  continuum:0 "Continuum"
+ continuum_home_fleet:0 "Home Fleet"
+ continuum_intro_title:0 "A New Polity"
+ continuum_intro_ok:0 "Begin"
+ continuum_intro_present:0 "A thousand years have passed. The old empires still hold the cores of their space. You are a new political entity in their galaxy — not their heir."
+ continuum_intro_new:0 "A thousand years have passed. Your people have only now reached FTL. The powers of the last age still occupy their cores. The rim, and the gaps between them, are yours to claim."
+ continuum_intro_border:0 "A thousand years have passed. You rise on a frontier the old empires never fully settled. They still exist, inland. You are a new state on their doorstep."
+ continuum_intro_primitive:0 "A thousand years have passed. Your world was pre-FTL in the last age. You have reached the stars. The empires that once mapped this sky still exist. You do not serve them."
+ continuum_intro_crisis:0 "A thousand years have passed since the crisis that scarred this galaxy. The old empires that survived still hold their cores. You are a new polity in the wreckage — survivors, or something that grew in the dark."
+ opinion_continuum_ceasefire:0 "Lingering Hostility"

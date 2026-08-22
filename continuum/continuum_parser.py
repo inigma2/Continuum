@@ -8,6 +8,7 @@ import sys
 import shutil
 import json
 import datetime
+import continuum_empires
 
 # Conditional import for Windows-specific registry access
 if sys.platform == "win32":
@@ -15,7 +16,7 @@ if sys.platform == "win32":
 
 # --- CONFIGURATION ---
 SUPPORTED_STELLARIS_VERSION = "4.4"
-MOD_VERSION = "0.6.0"
+MOD_VERSION = "0.7.0"
 VANILLA_GALAXY_SHAPES = (
     "elliptical",
     "spiral_2",
@@ -290,6 +291,10 @@ NPC_STAR_FLAGS = frozenset({
     "hostile_system",
     "guardian",
     "antique_threat_system",
+    "marauder_capital_1",
+    "marauder_capital_2",
+    "marauder_capital_3",
+    "marauder_system",
 })
 
 def parse_script_keys(file_list):
@@ -765,12 +770,15 @@ def write_mod_descriptor_files(mod_dir, user_dir):
             f'path="{mod_path}"\nremote_file_id="3554276594"\n'
         ))
 
-def write_localisation_file(output_path):
+def write_localisation_file(output_path, extra_keys=None):
     # Stellaris YAML requires a UTF-8 BOM and a leading space on each key.
     with open(output_path, 'w', encoding='utf-8-sig') as f:
         f.write('l_english:\n continuum:0 "Continuum"\n')
+        for key, value in (extra_keys or {}).items():
+            safe = str(value).replace('"', r'\"')
+            f.write(f' {key}:0 "{safe}"\n')
 
-def write_map_file(systems_list, nebulas_list, wormhole_pairs, output_path, loc_data):
+def write_map_file(systems_list, nebulas_list, wormhole_pairs, output_path, loc_data, spawn_ids=None, player_system_id=None, spawn_weights=None):
     if not systems_list: return
 
     wormhole_flags_by_system = {}
@@ -783,7 +791,7 @@ def write_map_file(systems_list, nebulas_list, wormhole_pairs, output_path, loc_
         f.write('static_galaxy_scenario = {\n')
         f.write('\tname = "continuum"\n')
         f.write('\tpriority = 10\n')
-        f.write('\tnum_empires = { min = 1 max = 1 }\n')
+        f.write('\tnum_empires = { min = 1 max = 8 }\n')
         f.write('\tnum_empire_default = 1\n')
         f.write('\tfallen_empire_default = 0\n')
         f.write('\tfallen_empire_max = 0\n')
@@ -814,7 +822,13 @@ def write_map_file(systems_list, nebulas_list, wormhole_pairs, output_path, loc_
             if sys_id in wormhole_flags_by_system:
                 flag_string = f' effect = {{ set_star_flag = {wormhole_flags_by_system[sys_id]} }}'
 
-            f.write(f'\tsystem = {{ id = "{sys_id}" name = "{sys_name}" position = {{ x = {sys_x} y = {sys_y} }} initializer = {initializer_name}{flag_string} }}\n')
+            weight = ""
+            if spawn_weights and str(sys_id) in spawn_weights:
+                weight = continuum_empires.format_spawn_weight(spawn_weights[str(sys_id)])
+            elif spawn_ids and str(sys_id) in spawn_ids:
+                weight = " spawn_weight = { base = 1 }"
+
+            f.write(f'\tsystem = {{ id = "{sys_id}" name = "{sys_name}" position = {{ x = {sys_x} y = {sys_y} }} initializer = {initializer_name}{flag_string}{weight} }}\n')
 
         f.write('\n\t# --- Hyperlane Definitions ---\n')
         processed_lanes, systems_dict = set(), {s['id']: s for s in systems_list}
@@ -836,7 +850,7 @@ def write_map_file(systems_list, nebulas_list, wormhole_pairs, output_path, loc_
         
         f.write('}\n')
 
-def write_initializer_file(systems_list, parsed_megastructures, start_system_id, output_path, all_mega_definitions, shroud_data, deposit_keys=None, modifier_keys=None):
+def write_initializer_file(systems_list, parsed_megastructures, start_system_id, output_path, all_mega_definitions, shroud_data, deposit_keys=None, modifier_keys=None, spawn_ids=None, extra_star_flags=None, devastation_system=None, extra_planet_flags=None):
     if not systems_list: return
     
     megastructures_by_system = defaultdict(list)
@@ -879,6 +893,10 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                     init_effects.append(f'{tabs}\tset_variable = {{ which = continuum_mega_name value = "{clean_name}" }}')
             if body.get("planet_class") == "pc_habitat":
                 init_effects.append(f'{tabs}\tset_planet_flag = habitat')
+            if devastation_system is not None and str(sys_id) == str(devastation_system) and continuum_empires.is_habitable_class(body.get("planet_class")):
+                init_effects.append(f'{tabs}\tset_planet_flag = continuum_cw_devastation')
+            for fl in (extra_planet_flags or {}).get(str(body.get("id")), []):
+                init_effects.append(f'{tabs}\tset_planet_flag = {fl}')
             for dtype in body.get("deposit_types") or []:
                 if dtype in allowed_deposits:
                     init_effects.append(f'{tabs}\tadd_deposit = {dtype}')
@@ -905,7 +923,9 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
 
             f.write(f"{initializer_name} = {{\n")
             f.write(f'\tname = "{sys_name}"\n\tclass = "{star_class}"\n')
-            f.write('\tusage = empire_init\n\n' if sys_id == start_system_id else '\tusage = misc_system_init\n\n')
+            is_empire_start = (str(sys_id) == str(start_system_id)) or (spawn_ids and str(sys_id) in spawn_ids)
+            home_planet_written = False
+            f.write('\tusage = empire_init\n\n' if is_empire_start else '\tusage = misc_system_init\n\n')
             
             hierarchy_root = system.get('hierarchy_root')
             if not hierarchy_root:
@@ -957,8 +977,9 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                 else:
                     f.write(f'\t\torbit_distance = {rel_dist_l1:.2f}\n\t\torbit_angle = {round(rel_angle_l1)}\n')
 
-                if sys_id == start_system_id and body_l1 is level_1_bodies[0] and body_l1['body_type'] != 'star':
+                if is_empire_start and not home_planet_written and continuum_empires.is_habitable_class(body_l1.get("planet_class")):
                      f.write('\t\thome_planet = yes\n')
+                     home_planet_written = True
                 
                 write_body_init_effects(body_l1, '\t\t')
                 
@@ -984,6 +1005,9 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                         is_first_l2_body = False
                     else:
                         f.write(f'\t\t\torbit_distance = {rel_dist_l2:.2f}\n\t\t\torbit_angle = {round(rel_angle_l2)}\n')
+                    if is_empire_start and not home_planet_written and continuum_empires.is_habitable_class(body_l2.get("planet_class")):
+                        f.write('\t\t\thome_planet = yes\n')
+                        home_planet_written = True
                     
                     write_body_init_effects(body_l2, '\t\t\t')
 
@@ -1078,6 +1102,9 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                 or fl in NPC_STAR_FLAGS
                 or str(fl).startswith('guardians_')
             ]
+            for fl in (extra_star_flags or {}).get(str(sys_id), []):
+                if fl not in copy_flags:
+                    copy_flags.append(fl)
             mega_needs_lgate = has_megas and any(m.get('type') == 'lgate_base' for m in megastructures_by_system.get(sys_id, []))
             if mega_needs_lgate and 'lgate' not in copy_flags:
                 copy_flags.append('lgate')
@@ -1158,7 +1185,7 @@ def find_body_in_system(hierarchy_root, target_id):
             queue.extend(body['children'])
     return None
 
-def write_on_actions_file(output_path, has_wormholes, has_planet_megas, has_shroud_enclave, has_open_lgates=False, has_npcs=True):
+def write_on_actions_file(output_path, has_wormholes, has_planet_megas, has_shroud_enclave, has_open_lgates=False, has_npcs=True, has_empires=False):
     content = "# These should run after the static galaxy has been generated.\n\non_game_start = {\n\tevents = {\n"
     if has_planet_megas:
         content += "\t\tcontinuum_megastructure.1 # spawn planet-bound megastructures\n"
@@ -1171,7 +1198,11 @@ def write_on_actions_file(output_path, has_wormholes, has_planet_megas, has_shro
         content += "\t\tcontinuum_shroud.1 # spawn and link shroud tunnel nodes to the nexus\n"
     if has_npcs:
         content += "\t\tcontinuum_npc.1 # enclaves, leviathans, ambient fauna from save flags\n"
+    if has_empires:
+        content += "\t\tcontinuum_empire.1 # restore Pre default empires as NPCs\n"
     content += "\t}\n}\n"
+    if has_empires:
+        content += "\non_game_start_country = {\n\tevents = {\n\t\tcontinuum_intro.1 # new-polity briefing\n\t}\n}\n"
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(content)
@@ -2166,7 +2197,13 @@ def main():
             save_list_for_selection.append(save)
             print(f"  [{len(save_list_for_selection)}] {save['date']} {save['name']}")
     
-    argv_save = sys.argv[1] if len(sys.argv) > 1 else None
+    argv_save = None
+    argv_start = None
+    for arg in sys.argv[1:]:
+        if arg.startswith("--start="):
+            argv_start = arg.split("=", 1)[1].strip().lower()
+        elif not arg.startswith("--") and argv_save is None:
+            argv_save = arg
     selected_save = None
     if argv_save:
         needle = argv_save.replace('/', '\\').lower()
@@ -2220,11 +2257,12 @@ def main():
     output_init_dir = os.path.join(script_dir, "common", "solar_system_initializers")
     output_onactions_dir = os.path.join(script_dir, "common", "on_actions")
     output_effects_dir = os.path.join(script_dir, "common", "scripted_effects")
+    output_opinion_dir = os.path.join(script_dir, "common", "opinion_modifiers")
     output_prescripted_dir = os.path.join(script_dir, "prescripted_countries")
     output_events_dir = os.path.join(script_dir, "events")
     output_loc_dir = os.path.join(script_dir, "localisation", "english")
 
-    for d in [output_map_dir, output_init_dir, output_onactions_dir, output_effects_dir, output_prescripted_dir, output_events_dir, output_loc_dir]:
+    for d in [output_map_dir, output_init_dir, output_onactions_dir, output_effects_dir, output_opinion_dir, output_prescripted_dir, output_events_dir, output_loc_dir]:
         os.makedirs(d, exist_ok=True)
     print("Directory structure created.")
 
@@ -2262,13 +2300,19 @@ def main():
                     print(f"Warning: Could not find host planet ID {original_planet_id} for megastructure '{mega.get('type')}' in system {target_system.get('name')}")
         
         system_count = len(galaxy_data)
-        start_system_id = None
-        for system in galaxy_data:
-            if system.get('name', '').lower() == 'sol': 
-                start_system_id = system.get('id')
-                break
-        if not start_system_id and galaxy_data: 
-            start_system_id = galaxy_data[0].get('id')
+        print("\nBuilding 0.7 empire / start plan from the save...")
+        empire_plan = continuum_empires.build_empire_plan(
+            save_file_path, galaxy_data, parsed_stars, parsed_planets, argv_start=argv_start
+        )
+        start_system_id = empire_plan.get("player_system")
+        if not start_system_id and galaxy_data:
+            start_system_id = galaxy_data[0].get("id")
+        print(f"Restored Pre empires: {len(empire_plan.get('empires') or [])}")
+        print(f"Restored fallen empires: {len(empire_plan.get('fallen') or [])}")
+        print(f"Restored marauders: {len(empire_plan.get('marauders') or [])}")
+        print(f"Restored primitives: {len(empire_plan.get('primitives') or [])}")
+        print(f"Spawn-weight systems: {len(empire_plan.get('spawn_ids') or [])}")
+        print(f"Present crisis in save: {bool(empire_plan.get('had_crisis'))}")
         
         output_map_file = os.path.join(output_map_dir, "continuum.txt")
         output_initializer_file = os.path.join(output_init_dir, "continuum_initializers.txt")
@@ -2287,9 +2331,20 @@ def main():
             log("Save has lgates_activated_globally. Post will activate L-gates on game start.")
             print("Detected open L-Gate network. Continuum will activate L-gates after galaxy gen.")
 
-        write_map_file(galaxy_data, parsed_nebulas, wormhole_pairs, output_map_file, localization)
-        write_initializer_file(galaxy_data, parsed_megastructures, start_system_id, output_initializer_file, all_mega_definitions, shroud_data, deposit_keys, modifier_keys)
-        write_localisation_file(os.path.join(output_loc_dir, "continuum_l_english.yml"))
+        write_map_file(galaxy_data, parsed_nebulas, wormhole_pairs, output_map_file, localization, spawn_ids=empire_plan.get("spawn_ids"), spawn_weights=empire_plan.get("spawn_weights"))
+        write_initializer_file(galaxy_data, parsed_megastructures, start_system_id, output_initializer_file, all_mega_definitions, shroud_data, deposit_keys, modifier_keys, spawn_ids=empire_plan.get("spawn_ids"), extra_star_flags=empire_plan.get("extra_flags"), devastation_system=empire_plan.get("devastation_system"), extra_planet_flags=empire_plan.get("planet_flags"))
+        loc_extra = {}
+        trait_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/traits'))
+        civic_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/governments/civics'))
+        ethic_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/ethics'))
+        continuum_empires.write_intro_and_empire_events(
+            output_events_dir, loc_extra, empire_plan,
+            empire_plan.get("empires") or [], empire_plan.get("species") or {},
+            empire_plan.get("owned") or {}, empire_plan.get("capitals") or {},
+            trait_keys, civic_keys, ethic_keys
+        )
+        continuum_empires.write_opinion_file(os.path.join(output_opinion_dir, "continuum_opinion_modifiers.txt"))
+        write_localisation_file(os.path.join(output_loc_dir, "continuum_l_english.yml"), extra_keys=loc_extra)
         write_mod_descriptor_files(script_dir, stellaris_user_dir)
         
         write_wormhole_events_file(output_wormhole_events_file, len(wormhole_pairs))
@@ -2307,7 +2362,8 @@ def main():
                               has_planet_megas=(len(planet_bound_megas) > 0),
                               has_shroud_enclave=has_shroud_data,
                               has_open_lgates=has_open_lgates,
-                              has_npcs=True)
+                              has_npcs=True,
+                              has_empires=bool(empire_plan.get("empires")))
         
         print("\n--- PARSING COMPLETE ---")
         print(f"Found {system_count} systems, {counts['nebula']} nebulas, {counts['star']} stars, {counts['planet']} planets, {counts['moon']} moons, and {counts['asteroid']} asteroids.")
