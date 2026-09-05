@@ -16,7 +16,7 @@ if sys.platform == "win32":
 
 # --- CONFIGURATION ---
 SUPPORTED_STELLARIS_VERSION = "4.4"
-MOD_VERSION = "0.7.0"
+MOD_VERSION = "0.7.5"
 VANILLA_GALAXY_SHAPES = (
     "elliptical",
     "spiral_2",
@@ -288,6 +288,12 @@ NPC_STAR_FLAGS = frozenset({
     "tiyanki_spawn_system",
     "tiyanki_graveyard_system",
     "voidworms_system",
+    "shroudwalker_enclave_system",
+    "lost_swarm_system",
+    "wenkwort_system",
+    "relic_system",
+    "relic_system_1",
+    "relic_system_4",
     "hostile_system",
     "guardian",
     "antique_threat_system",
@@ -489,9 +495,14 @@ def resolve_name(name_block_content, loc_data, star_count_context=None, parent_b
                 suffix_match = re.search(r'key="([^"]+)"', suffix_val_block)
                 if suffix_match: suffix = suffix_match.group(1)
             return f"{prefix}{suffix}"
-    if name_key in loc_data: return loc_data[name_key]
-    clean_name = re.sub(r'(_system|_SYSTEM)$', '', name_key)
-    clean_name = re.sub(r'^(NAME_|SPEC_)', '', clean_name)
+    if name_key in loc_data:
+        val = loc_data[name_key]
+        if val and "$" not in val and not val.startswith("%"):
+            return val
+    clean_name = re.sub(r'(_system|_SYSTEM|_planet|_PLANET|_star|_STAR)$', '', name_key)
+    clean_name = re.sub(r'^(NAME_|SPEC_|PRESCRIPTED_|EMPIRE_DESIGN_)', '', clean_name)
+    if "_CHR_" in clean_name:
+        clean_name = clean_name.split("_CHR_", 1)[-1]
     return clean_name.replace('_', ' ')
 
 def build_galaxy_hierarchy(stars, planets, loc_data):
@@ -550,10 +561,17 @@ def build_galaxy_hierarchy(stars, planets, loc_data):
         
         resolve_all_names(system_center)
 
-        # Player set_name hits the star body; galactic_object often keeps the old system name.
+        # Primary star in a binary is "Cyban A"; the galactic_object name is "Cyban".
+        # Never promote the A/B/C star label to the system name.
         star_bodies = [b for b in system_center.get('children', []) if b.get('body_type') == 'star' and b.get('name')]
+        sys_nm = str(system.get('name') or "")
         if star_bodies:
-            system['name'] = star_bodies[0]['name']
+            star_nm = str(star_bodies[0]['name'])
+            star_core = re.sub(r"\s[ABC]$", "", star_nm).strip()
+            if sys_nm in ("", "Unknown") or re.search(r"\s[ABC]$", sys_nm):
+                system['name'] = star_core or star_nm
+            elif re.match(r"^" + re.escape(sys_nm) + r"\s[ABC]$", star_nm):
+                pass
 
         print(f"System {system.get('name', 'Unknown')}: Processed hierarchy.")
         hierarchical_systems.append(system)
@@ -773,7 +791,7 @@ def write_mod_descriptor_files(mod_dir, user_dir):
 def write_localisation_file(output_path, extra_keys=None):
     # Stellaris YAML requires a UTF-8 BOM and a leading space on each key.
     with open(output_path, 'w', encoding='utf-8-sig') as f:
-        f.write('l_english:\n continuum:0 "Continuum"\n')
+        f.write('l_english:\n continuum:0 "Continuum Present"\n')
         for key, value in (extra_keys or {}).items():
             safe = str(value).replace('"', r'\"')
             f.write(f' {key}:0 "{safe}"\n')
@@ -815,6 +833,7 @@ def write_map_file(systems_list, nebulas_list, wormhole_pairs, output_path, loc_
         f.write('\n\t# --- System Definitions ---\n')
         for system in systems_list:
             sys_id, sys_name = system.get('id'), system.get('name', f"Sys_{system.get('id')}").replace('"', '')
+            sys_name = re.sub(r"\s[ABC]$", "", sys_name).strip() or sys_name
             sys_x, sys_y = system.get('x', '0'), system.get('y', '0')
             initializer_name = f"continuum_system_init_{sys_id}"
             
@@ -918,6 +937,7 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
         for system in systems_list:
             sys_id = system.get('id')
             sys_name = system.get('name', f"Sys_{sys_id}").replace('"', '')
+            sys_name = re.sub(r"\s[ABC]$", "", sys_name).strip() or sys_name
             initializer_name = f"continuum_system_init_{sys_id}"
             star_class = system.get('system_star_class', 'sc_g')
 
@@ -946,8 +966,9 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                     max_radius = radius
             
             scale_factor = 1.0
-            if max_radius > 590:
-                scale_factor = 590 / max_radius
+            # Engine outer radius is planet orbit + moon orbit + belts; keep cartesian max well under 600.
+            if max_radius > 400:
+                scale_factor = 400 / max_radius
                 print(f"INFO: System '{sys_name}' is too large (radius: {max_radius:.2f}). Scaling by {scale_factor:.2f}.")
                 for body in all_bodies_in_system:
                     body['abs_x'] *= scale_factor
@@ -1000,11 +1021,12 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                     f.write(f'\t\t\tclass = "{body_l2.get("planet_class", "pc_barren")}"\n\t\t\tsize = {body_l2.get("planet_size", 10)}\n')
                     
                     if is_first_l2_body:
-                        f.write(f'\t\t\torbit_distance = {orbit_params_l2["distance"]:.2f}\n')
+                        moon_d = min(float(orbit_params_l2["distance"]), 45.0)
+                        f.write(f'\t\t\torbit_distance = {moon_d:.2f}\n')
                         f.write(f'\t\t\torbit_angle = {round(orbit_params_l2["angle"])}\n')
                         is_first_l2_body = False
                     else:
-                        f.write(f'\t\t\torbit_distance = {rel_dist_l2:.2f}\n\t\t\torbit_angle = {round(rel_angle_l2)}\n')
+                        f.write(f'\t\t\torbit_distance = {min(float(rel_dist_l2), 25.0):.2f}\n\t\t\torbit_angle = {round(rel_angle_l2)}\n')
                     if is_empire_start and not home_planet_written and continuum_empires.is_habitable_class(body_l2.get("planet_class")):
                         f.write('\t\t\thome_planet = yes\n')
                         home_planet_written = True
@@ -1097,7 +1119,7 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
 
             copy_flags = [
                 fl for fl in (system.get('flags') or [])
-                if fl in ('lgate', 'lcluster1', 'lcluster', 'lcluster_lgate', 'terminal_egress', 'shroudwalker_enclave_system', 'enclave')
+                if fl in ('lgate', 'lcluster1', 'lcluster', 'lcluster_lgate', 'terminal_egress', 'shroudwalker_enclave_system', 'enclave', 'shroud_tunnel_nexus')
                 or str(fl).startswith('lcluster')
                 or fl in NPC_STAR_FLAGS
                 or str(fl).startswith('guardians_')
@@ -1120,7 +1142,7 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                 if has_belts:
                     for belt in system.get('asteroid_belts_data'):
                         belt_type = belt.get('type', 'rocky_asteroid_belt')
-                        belt_radius = float(belt.get('radius', 95)) * scale_factor
+                        belt_radius = min(float(belt.get('radius', 95)) * scale_factor, 400.0)
                         f.write(f'\t\tadd_asteroid_belt = {{ radius = {belt_radius:.2f} type = {belt_type} }}\n')
                 if has_megas:
                     for mega in megastructures_by_system[sys_id]:
@@ -1197,12 +1219,27 @@ def write_on_actions_file(output_path, has_wormholes, has_planet_megas, has_shro
         # Coven country is created in the nexus initializer.
         content += "\t\tcontinuum_shroud.1 # spawn and link shroud tunnel nodes to the nexus\n"
     if has_npcs:
-        content += "\t\tcontinuum_npc.1 # enclaves, leviathans, ambient fauna from save flags\n"
+        content += "\t\tcontinuum_npc.1 # enclaves, leviathans\n"
     if has_empires:
-        content += "\t\tcontinuum_empire.1 # restore Pre default empires as NPCs\n"
+        content += "\t\tcontinuum_empire.1 # countries, techs, civics, primitives, marauders\n"
+        content += "\t\tcontinuum_empire.2 # colonies and pop counts\n"
+        content += "\t\tcontinuum_empire.3 # starbases by size\n"
+        content += "\t\tcontinuum_empire.4 # named fleets\n"
+        content += "\t\tcontinuum_empire.5 # mining / research stations\n"
+    if has_npcs:
+        content += "\t\tcontinuum_npc.2 # Pre fauna / unique ships snapshot (after empire stations)\n"
+    if has_empires:
+        content += "\t\tcontinuum_empire.6 # starbase modules and megastructure owners\n"
+        content += "\t\tcontinuum_empire.7 # leaders\n"
+        content += "\t\tcontinuum_empire.8 # Pre–Pre communications and subjects\n"
+        content += "\t\tcontinuum_empire.9 # intel (stub if save has none)\n"
+        content += "\t\tcontinuum_empire.10 # district / zone / building layouts\n"
+        content += "\t\tcontinuum_empire.11 # colony armies\n"
+        content += "\t\tcontinuum_empire.12 # archaeological dig sites\n"
+        content += "\t\tcontinuum_empire.13 # traditions\n"
     content += "\t}\n}\n"
     if has_empires:
-        content += "\non_game_start_country = {\n\tevents = {\n\t\tcontinuum_intro.1 # new-polity briefing\n\t}\n}\n"
+        content += "\non_game_start_country = {\n\tevents = {\n\t\tcontinuum_player.1 # Old-prefix restored twin if player copies a Pre empire\n\t\tcontinuum_intro.1 # Continuum briefing\n\t}\n}\n"
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(content)
@@ -1239,7 +1276,7 @@ def gamestate_has_key(save_path, key):
         data = save_zip.read('gamestate').decode('utf-8', 'replace')
     return f"{key}=" in data
 
-def _crystal_pack_effect(effect_name, fleet_name, large, medium, small):
+def _crystal_pack_effect(effect_name, fleet_name, large, medium, small, n_large=8, n_medium=12, n_small=40):
     # Literal quoted designs. Clausewitz $PARAM$ next to name = "" ate the rest of the line.
     return f'''{effect_name} = {{
 	create_crystal_country = yes
@@ -1247,25 +1284,25 @@ def _crystal_pack_effect(effect_name, fleet_name, large, medium, small):
 		limit = {{ is_star = no }}
 		event_target:crystal_country = {{
 			create_fleet = {{
-				name = "{fleet_name}"
+				name = {fleet_name}
 				effect = {{
 					set_owner = event_target:crystal_country
 					while = {{
-						count = 5
+						count = {n_large}
 						create_ship = {{
 							name = random
 							design = "{large}"
 						}}
 					}}
 					while = {{
-						count = 8
+						count = {n_medium}
 						create_ship = {{
 							name = random
 							design = "{medium}"
 						}}
 					}}
 					while = {{
-						count = 12
+						count = {n_small}
 						create_ship = {{
 							name = random
 							design = "{small}"
@@ -1307,11 +1344,43 @@ def write_npc_effects_file(output_path):
             "NAME_Small_Crystal_Entity_Red",
         )
         + _crystal_pack_effect(
+            "continuum_spawn_crystal_yellow",
+            "NAME_Topaz_Guardians",
+            "NAME_Large_Crystal_Entity_Yellow",
+            "NAME_Medium_Crystal_Entity_Yellow",
+            "NAME_Small_Crystal_Entity_Yellow",
+        )
+        + _crystal_pack_effect(
             "continuum_spawn_crystal_elite",
             "NAME_Sapphire_Guardians",
             "NAME_Large_Crystal_Entity_Blue_Elite",
             "NAME_Medium_Crystal_Entity_Blue_Elite",
             "NAME_Small_Crystal_Entity_Blue_Elite",
+            4, 8, 16,
+        )
+        + _crystal_pack_effect(
+            "continuum_spawn_crystal_elite_green",
+            "NAME_Emerald_Guardians",
+            "NAME_Large_Crystal_Entity_Green_Elite",
+            "NAME_Medium_Crystal_Entity_Green_Elite",
+            "NAME_Small_Crystal_Entity_Green_Elite",
+            4, 8, 16,
+        )
+        + _crystal_pack_effect(
+            "continuum_spawn_crystal_elite_red",
+            "NAME_Ruby_Guardians",
+            "NAME_Large_Crystal_Entity_Red_Elite",
+            "NAME_Medium_Crystal_Entity_Red_Elite",
+            "NAME_Small_Crystal_Entity_Red_Elite",
+            4, 8, 16,
+        )
+        + _crystal_pack_effect(
+            "continuum_spawn_crystal_elite_yellow",
+            "NAME_Topaz_Guardians",
+            "NAME_Large_Crystal_Entity_Yellow_Elite",
+            "NAME_Medium_Crystal_Entity_Yellow_Elite",
+            "NAME_Small_Crystal_Entity_Yellow_Elite",
+            2, 6, 16,
         )
         + r'''continuum_spawn_drone_pack = {
 	create_drone_country = yes
@@ -1322,8 +1391,8 @@ def write_npc_effects_file(output_path):
 				name = "NAME_Ancient_Mining_Drones"
 				effect = {
 					set_owner = event_target:drone_country
-					while = { count = 8 create_ship = { name = "" design = "NAME_Ancient_Mining_Drone" } }
-					while = { count = 4 create_ship = { name = "" design = "NAME_Ancient_Combat_Drone" } }
+					while = { count = 16 create_ship = { name = "" design = "NAME_Ancient_Mining_Drone" } }
+					while = { count = 8 create_ship = { name = "" design = "NAME_Ancient_Combat_Drone" } }
 					set_location = PREVPREV
 					set_fleet_stance = aggressive
 					set_aggro_range_measure_from = self
@@ -1343,8 +1412,8 @@ continuum_spawn_drone_destroyer_pack = {
 				name = "NAME_Asset_Protection_Unit"
 				effect = {
 					set_owner = event_target:drone_country
-					while = { count = 7 create_ship = { name = "" design = "NAME_Ancient_Combat_Drone" } }
-					while = { count = 3 create_ship = { name = "" design = "NAME_Ancient_Destroyer" } }
+					while = { count = 14 create_ship = { name = "" design = "NAME_Ancient_Combat_Drone" } }
+					while = { count = 8 create_ship = { name = "" design = "NAME_Ancient_Destroyer" } }
 					set_location = PREVPREV
 					set_fleet_stance = aggressive
 					set_aggro_range_measure_from = self
@@ -1365,8 +1434,8 @@ continuum_spawn_amoeba_pack = {
 				settings = { garrison = yes }
 				effect = {
 					set_owner = event_target:amoeba_country
-					while = { count = 4 create_ship = { name = "" design = "NAME_Large_Space_Organism_Zebra" } }
-					while = { count = 6 create_ship = { name = "" design = "NAME_Small_Space_Organism_Zebra" } }
+					while = { count = 12 create_ship = { name = "" design = "NAME_Large_Space_Organism_Zebra" } }
+					while = { count = 18 create_ship = { name = "" design = "NAME_Small_Space_Organism_Zebra" } }
 					set_location = PREVPREV
 					set_fleet_stance = aggressive
 					set_aggro_range_measure_from = self
@@ -1386,9 +1455,11 @@ continuum_spawn_tiyanki_pack = {
 				name = "NAME_Tiyanki_Space_Whale"
 				effect = {
 					set_owner = event_target:tiyanki_country
-					create_ship = { name = "" design = "NAME_Tiyanki_Cow" }
-					create_ship = { name = "" design = "NAME_Tiyanki_Bull" }
-					create_ship = { name = "" design = "NAME_Tiyanki_Calf" }
+					while = { count = 28 create_ship = { name = "" design = "NAME_Tiyanki_Cow" } }
+					while = { count = 13 create_ship = { name = "" design = "NAME_Tiyanki_Bull" } }
+					while = { count = 11 create_ship = { name = "" design = "NAME_Tiyanki_Calf" } }
+					while = { count = 10 create_ship = { name = "" design = "NAME_Tiyanki_Hatchling" } }
+					while = { count = 1 create_ship = { name = "" design = "NAME_Tiyanki_Ox" } }
 					set_location = PREVPREV
 					set_fleet_stance = passive
 				}
@@ -1470,7 +1541,7 @@ event = {
 								settings = { spawn_debris = no }
 								effect = {
 									set_owner = prev
-									create_ship = { name = random design = "NAME_Curator_Enclave_Station" graphical_culture = prev }
+									while = { count = 2 create_ship = { name = random design = "NAME_Curator_Enclave_Station" graphical_culture = prev } }
 									set_location = { target = prevprev distance = 100 }
 									save_global_event_target_as = curator_alpha_station
 								}
@@ -1486,7 +1557,7 @@ event = {
 								settings = { spawn_debris = no }
 								effect = {
 									set_owner = prev
-									create_ship = { name = random design = "NAME_Curator_Enclave_Station" graphical_culture = prev }
+									while = { count = 2 create_ship = { name = random design = "NAME_Curator_Enclave_Station" graphical_culture = prev } }
 									set_location = { target = prevprev distance = 120 }
 									save_global_event_target_as = curator_sigma_station
 								}
@@ -1500,7 +1571,7 @@ event = {
 								settings = { spawn_debris = no }
 								effect = {
 									set_owner = prev
-									create_ship = { name = random design = "NAME_Curator_Enclave_Station" graphical_culture = prev }
+									while = { count = 2 create_ship = { name = random design = "NAME_Curator_Enclave_Station" graphical_culture = prev } }
 									set_location = { target = prevprev distance = 120 }
 								}
 							}
@@ -1546,7 +1617,7 @@ event = {
 								settings = { spawn_debris = no }
 								effect = {
 									set_owner = prev
-									create_ship = { name = random design = "NAME_Artist_Enclave_Station" graphical_culture = prev }
+									while = { count = 2 create_ship = { name = random design = "NAME_Artist_Enclave_Station" graphical_culture = prev } }
 									set_location = { target = prevprev distance = 90 }
 								}
 							}
@@ -1560,7 +1631,7 @@ event = {
 								settings = { spawn_debris = no }
 								effect = {
 									set_owner = prev
-									create_ship = { name = random design = "NAME_Artist_Enclave_Station" graphical_culture = prev }
+									while = { count = 2 create_ship = { name = random design = "NAME_Artist_Enclave_Station" graphical_culture = prev } }
 									set_location = { target = prevprev distance = 90 }
 								}
 							}
@@ -1720,6 +1791,63 @@ event = {
 						create_salvager_enclave_country = yes
 						solar_system = { save_global_event_target_as = salvager_enclave_system }
 					}
+					else_if = {
+						limit = { NOT = { exists = event_target:muutagan_country } }
+						create_species = {
+							name = "NAME_Muutagan"
+							plural = NAME_Muutagan_plural
+							class = random_non_machine
+							portrait = random
+							traits = { ideal_planet_class = pc_habitat trait = trait_thrifty }
+						}
+						create_country = {
+							name = "NAME_Muutagan_Merchant_Guild"
+							adjective = NAME_Muutagan_adj
+							type = enclave
+							authority = "auth_oligarchic"
+							civics = { civic = civic_trading_conglomerate }
+							origin = "origin_default"
+							species = last_created_species
+							flag = {
+								icon = { category = "enclaves" file = "enclaves_flag_trader.dds" }
+								background = { category = "backgrounds" file = "double_hemispheres.dds" }
+								colors = { "green" "dark_green" "null" "null" }
+							}
+							ethos = { ethic = ethic_xenophile ethic = ethic_materialist ethic = ethic_egalitarian }
+							ignore_initial_colony_error = yes
+						}
+						last_created_country = {
+							set_country_flag = trader_enclave_country
+							set_country_flag = trader_enclave_country_3
+							set_graphical_culture = mammalian_01
+							save_global_event_target_as = muutagan_country
+							create_fleet = {
+								name = "NAME_Muutag_Station"
+								settings = { spawn_debris = no }
+								effect = {
+									set_owner = prev
+									create_ship = { name = random design = "NAME_Trader_Enclave_Station" graphical_culture = prev }
+									set_location = { target = prevprev distance = 90 }
+								}
+							}
+						}
+					}
+					else = {
+						if = {
+							limit = { exists = event_target:salvager_enclave_country }
+							event_target:salvager_enclave_country = {
+								create_fleet = {
+									name = "NAME_Asters_Workshop"
+									settings = { spawn_debris = no }
+									effect = {
+										set_owner = prev
+										create_ship = { name = random design = "NAME_Salvager_Enclave_Station" graphical_culture = prev }
+										set_location = { target = prevprev distance = 40 }
+									}
+								}
+							}
+						}
+					}
 				}
 			}
 			every_system = {
@@ -1798,80 +1926,37 @@ event = {
 				}
 			}
 			every_system = {
-				limit = { OR = { has_star_flag = blue_system has_star_flag = blue2_system } }
-				continuum_spawn_crystal_blue = yes
-			}
-			every_system = {
-				limit = { OR = { has_star_flag = green_system has_star_flag = green2_system } }
-				continuum_spawn_crystal_green = yes
-			}
-			every_system = {
-				limit = { OR = { has_star_flag = red_system has_star_flag = red2_system } }
-				continuum_spawn_crystal_red = yes
-			}
-			every_system = {
-				limit = { has_star_flag = crystal_home_system }
-				continuum_spawn_crystal_elite = yes
-			}
-			every_system = {
 				limit = {
-					OR = {
-						has_star_flag = drone_system_1
-						has_star_flag = drone_system_2
-						has_star_flag = drone_system_3
-						has_star_flag = drone_system_4
-						has_star_flag = drone_home_system
-					}
+					has_star_flag = shroudwalker_enclave_system
+					NOT = { has_star_flag = shroud_tunnel_nexus }
 				}
-				continuum_spawn_drone_pack = yes
-			}
-			every_system = {
-				limit = { has_star_flag = drone_destroyer_system }
-				continuum_spawn_drone_destroyer_pack = yes
-			}
-			every_system = {
-				limit = {
-					OR = {
-						has_star_flag = amoeba_1_system
-						has_star_flag = amoeba_2_system
-						has_star_flag = amoeba_3_system
-						has_star_flag = amoeba_4_system
-						has_star_flag = amoeba_home_system
-					}
-				}
-				continuum_spawn_amoeba_pack = yes
-			}
-			every_system = {
-				limit = {
-					OR = {
-						has_star_flag = tiyanki_home_system
-						has_star_flag = tiyanki_spawn_system
-					}
-				}
-				continuum_spawn_tiyanki_pack = yes
-			}
-			every_system = {
-				limit = { has_star_flag = void_system }
-				continuum_spawn_cloud_pack = yes
-			}
-			every_system = {
-				limit = { has_star_flag = voidworms_system }
-				create_voidworms_country = yes
 				if = {
-					limit = { exists = event_target:voidworms_country }
+					limit = { exists = event_target:shroudwalker_enclave_country }
 					random_system_planet = {
-						limit = { is_star = no }
-						save_event_target_as = continuum_voidworm_loc
-						create_voidworms_small_fleet = { LOCATION = event_target:continuum_voidworm_loc }
+						limit = { is_star = yes }
+						event_target:shroudwalker_enclave_country = {
+							create_fleet = {
+								name = "NAME_Shroud_Teachers"
+								settings = { spawn_debris = no }
+								effect = {
+									set_owner = prev
+									create_ship = { name = random design = "NAME_Shroudwalker_Enclave_Station" graphical_culture = prev }
+									set_location = { target = prevprev distance = 80 }
+								}
+							}
+						}
 					}
 				}
 			}
+			# Ambient fauna / uniques: continuum_npc.2 from Pre ship snapshot
 		}
 	}
 }
 '''
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(content)
+    return
+
 
 def write_shroud_tunnel_events_file(output_path):
     content = """namespace = continuum_shroud
@@ -2146,7 +2231,7 @@ def write_prescripted_country_file(output_path):
 
 def main():
     clear_screen()
-    print("--- Continuum Galaxy Parser ---")
+    print("--- Continuum Present Parser ---")
     
     script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in locals() else os.getcwd()
 
@@ -2301,6 +2386,7 @@ def main():
         
         system_count = len(galaxy_data)
         print("\nBuilding 0.7 empire / start plan from the save...")
+        continuum_empires.set_loc_data(localization)
         empire_plan = continuum_empires.build_empire_plan(
             save_file_path, galaxy_data, parsed_stars, parsed_planets, argv_start=argv_start
         )
@@ -2313,6 +2399,12 @@ def main():
         print(f"Restored primitives: {len(empire_plan.get('primitives') or [])}")
         print(f"Spawn-weight systems: {len(empire_plan.get('spawn_ids') or [])}")
         print(f"Present crisis in save: {bool(empire_plan.get('had_crisis'))}")
+        import continuum_fauna
+        fauna_snap = continuum_fauna.parse_fauna_snapshot(save_file_path)
+        for sid in fauna_snap.get("systems") or []:
+            empire_plan.setdefault("extra_flags", {}).setdefault(str(sid), []).append(f"continuum_s{sid}")
+        for i, pid in enumerate(fauna_snap.get("drone_mine_planets") or []):
+            empire_plan.setdefault("planet_flags", {}).setdefault(str(pid), []).append(f"continuum_drone_mine_{i}")
         
         output_map_file = os.path.join(output_map_dir, "continuum.txt")
         output_initializer_file = os.path.join(output_init_dir, "continuum_initializers.txt")
@@ -2337,11 +2429,12 @@ def main():
         trait_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/traits'))
         civic_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/governments/civics'))
         ethic_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/ethics'))
+        tech_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/technology'))
         continuum_empires.write_intro_and_empire_events(
             output_events_dir, loc_extra, empire_plan,
             empire_plan.get("empires") or [], empire_plan.get("species") or {},
             empire_plan.get("owned") or {}, empire_plan.get("capitals") or {},
-            trait_keys, civic_keys, ethic_keys
+            trait_keys, civic_keys, ethic_keys, tech_keys=tech_keys
         )
         continuum_empires.write_opinion_file(os.path.join(output_opinion_dir, "continuum_opinion_modifiers.txt"))
         write_localisation_file(os.path.join(output_loc_dir, "continuum_l_english.yml"), extra_keys=loc_extra)
@@ -2356,6 +2449,9 @@ def main():
             write_lgate_events_file(os.path.join(output_events_dir, "continuum_lgate_events.txt"))
         write_npc_effects_file(os.path.join(output_effects_dir, "continuum_npc_effects.txt"))
         write_npc_events_file(os.path.join(output_events_dir, "continuum_npc_events.txt"))
+        continuum_fauna.write_fauna_events_file(
+            os.path.join(output_events_dir, "continuum_fauna_events.txt"), fauna_snap
+        )
         
         write_on_actions_file(output_onactions_file, 
                               has_wormholes=(len(wormhole_pairs) > 0), 
@@ -2379,7 +2475,7 @@ def main():
                     if os.path.getsize(os.path.join(path_dir, file)) > 0:
                         print(f"- {os.path.relpath(os.path.join(path_dir, file), script_dir)}")
 
-        print("\nTo load your imported game, select the 'Continuum' galaxy when starting a New Game.")
+        print("\nTo load your imported game, select the 'Continuum Present' galaxy when starting a New Game.")
         log("Parser finished successfully.")
     else:
         log("FATAL: Could not parse critical galaxy data.")

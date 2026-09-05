@@ -4,7 +4,7 @@ A Stellaris galaxy converter — one galaxy to rule them all.
 
 Turn a finished (or mid-game) save into a playable **static galaxy** for a new game. The Python parser reads your `.sav` and writes systems, hyperlanes, stars, planets, moons, asteroids, belts, nebulas, megastructures, and wormholes into the Continuum mod folder.
 
-- **Current:** 0.7.0 for Stellaris **4.4.*** (Pegasus)
+- **Current:** 0.7.5 for Stellaris **4.4.*** (Pegasus) — **Continuum Present**
 - Workshop: https://steamcommunity.com/sharedfiles/filedetails/?id=3554276594
 - Roadmap: https://steamcommunity.com/workshop/filedetails/discussion/3554276594/596284386694022138/
 
@@ -16,7 +16,7 @@ Stellaris loads the **runtime** copy, usually:
 
 `Documents/Paradox Interactive/Stellaris/mod/continuum`
 
-Copy `continuum_parser.py`, `continuum_empires.py`, `descriptor.mod`, `thumbnail.png`, and `localisation/` into that folder (or run the parser from a copy of this `continuum/` directory placed there). The parser **writes generated files next to itself** — map, initializers, events — from the save you pick. Do not commit those generated files.
+Copy the Python modules (`continuum_parser.py`, `continuum_empires.py`, `continuum_cp.py`, `continuum_fauna.py`, `continuum_player.py`), `descriptor.mod`, `thumbnail.png`, and `localisation/` into that folder (or run the parser from a copy of this `continuum/` directory placed there). The parser **writes generated files next to itself** — map, initializers, events — from the save you pick. Do not commit those generated files.
 
 ## How to use
 
@@ -25,14 +25,22 @@ Copy `continuum_parser.py`, `continuum_empires.py`, `descriptor.mod`, `thumbnail
 3. Put this `continuum/` folder in your Stellaris `mod` directory and enable Continuum in the launcher.
 4. From that folder: `python continuum_parser.py`
 5. Pick the save. Wait for it to finish.
-6. New Game → pick an empire → **Galaxy Size: Continuum** (any galaxy shape).
+6. New Game → pick an empire → **Galaxy Size: Continuum Present** (any galaxy shape).
 7. Turn extra wormholes / gateways / hyperlanes off if you want a near-exact import. Console `play 0` then `observe` to inspect before playing.
 
 `supported_version` is `v4.4.*`. Values like `v4.*` are rejected by 4.4 and can hide the mod.
 
+## 0.7.5 — Continuum Present
+
+New Game on **Continuum Present** is a 2200 start in the imported galaxy. You are always a new polity; Pre empires come back as living NPCs.
+
+Restores, as far as Stellaris scripts allow: empire identity and names, colonies and layouts, pops, starbases, stations, fleets, armies/transports, leaders, primitives, Fallen Empires, marauders, enclaves, fauna, deposits, L-gates, and shroud tunnels.
+
+Copy-match (same species class, authority, civics, ethics, non-default origin) becomes **Old {name}** with reversed flag colors and **O.** leaders. Intro title is **Continuum Present**; first line **Welcome to your galaxy...continued!**
+
 ## 0.7.0
 
-You start as a **new polity**. Pre default empires, Fallen Empires, and marauders return as living NPCs with starbases and colonies. Spawn weight prefers unowned or border systems near a matching Pre species class (and former primitive worlds of that class). Cores are not valid starts. Intro event is ~1000 years later.
+You start as a **new polity**. Pre default empires, Fallen Empires, and marauders return as living NPCs with starbases and colonies. Spawn weight prefers unowned or border systems near a matching Pre species class (and former primitive worlds of that class). Cores are not valid starts.
 
 Does not copy your old save as the player. Pre-FTL civilizations are not fully restored as countries yet.
 
