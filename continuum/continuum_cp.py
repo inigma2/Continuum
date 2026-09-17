@@ -36,6 +36,13 @@ FORMAT_NAME_KEYS = frozenset({
 LEADER_CLASSES = frozenset({"official", "scientist", "commander"})
 # Soldier/warrior jobs spawn these on colonies. create_army of the same type
 # stacks on top and doubles garrison (Weeer 14 -> 28, UI ~623 -> ~1194).
+FE_ONLY_BUILDINGS = frozenset({
+    "building_ancient_palace", "building_fe_dome", "building_micro_forge",
+    "building_affluence_emporium", "building_dimensional_replicator",
+    "building_class_4_singularity", "building_fe_mine_2", "building_nourishment_center",
+    "building_master_archive", "building_fe_stronghold", "building_sky_dome",
+    "building_empyrean_dome",
+})
 JOB_DEFENSE_ARMY_TYPES = frozenset({
     "defense_army",
     "machine_defense",
@@ -419,6 +426,23 @@ def _army_type_key(typ):
 
 def _is_job_defense_army(typ):
     return _army_type_key(typ) in JOB_DEFENSE_ARMY_TYPES
+
+
+def _council_seat(emp, ld):
+    cls = ld.get("class")
+    auth = str(emp.get("authority") or "")
+    gestalt = auth in ("auth_hive_mind", "auth_machine_intelligence")
+    if gestalt:
+        return {
+            "commander": "councilor_gestalt_legion",
+            "scientist": "councilor_gestalt_cognitive",
+            "official": "councilor_gestalt_regulatory",
+        }.get(cls)
+    return {
+        "commander": "councilor_defense",
+        "scientist": "councilor_research",
+        "official": "councilor_state",
+    }.get(cls)
 
 
 def _is_councilor_trait(trait):
@@ -1379,7 +1403,21 @@ def emit_leader_event(restored):
             "					every_owned_leader = {",
             "						kill_leader = { show_notification = no }",
             "					}",
+            "					unlock_council_slots = 3",
         ]
+        seated = set()
+        auth = str(emp.get("authority") or "")
+        if auth in ("auth_hive_mind", "auth_machine_intelligence"):
+            for seat in (
+                "councilor_gestalt_growth",
+                "councilor_gestalt_cognitive",
+                "councilor_gestalt_legion",
+                "councilor_gestalt_regulatory",
+            ):
+                creates.append(f"					set_council_position_to_council = {seat}")
+        else:
+            for seat in ("councilor_defense", "councilor_research", "councilor_state"):
+                creates.append(f"					set_council_position_to_council = {seat}")
         for n, ld in enumerate(leads):
             valid = [
                 t for t in (ld.get("traits") or [])
@@ -1442,7 +1480,19 @@ def emit_leader_event(restored):
 						}}
 						assign_leader = event_target:{tgt}
 					}}""")
-            if deferred and role == "ruler":
+            seat = None
+            if role == "councilor":
+                seat = _council_seat(emp, ld)
+                if seat in seated:
+                    seat = None
+            elif emp.get("type") == "fallen_empire" and role == "admiral":
+                seat = _council_seat(emp, ld)
+            if seat:
+                seated.add(seat)
+                creates.append(f"""					event_target:{tgt} = {{
+						set_council_position = {seat}
+					}}""")
+            if deferred and (role == "ruler" or seat):
                 adds = "\n".join(
                     f"						add_trait = {{ trait = {t} show_message = no }}"
                     for t in deferred
@@ -1554,6 +1604,9 @@ def emit_layout_event(restored):
                             continue
                         if str(bld).startswith("building_galactic_memorial"):
                             continue
+                        if emp.get("type") != "fallen_empire" or emp.get("_from_fe"):
+                            if bld in FE_ONLY_BUILDINGS or str(bld).startswith("building_fe_"):
+                                continue
                         if bld == "building_factory_1":
                             if gestalt:
                                 continue

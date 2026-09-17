@@ -16,7 +16,7 @@ if sys.platform == "win32":
 
 # --- CONFIGURATION ---
 SUPPORTED_STELLARIS_VERSION = "4.4"
-MOD_VERSION = "0.7.5"
+MOD_VERSION = "0.8.3"
 VANILLA_GALAXY_SHAPES = (
     "elliptical",
     "spiral_2",
@@ -791,23 +791,23 @@ def write_mod_descriptor_files(mod_dir, user_dir):
 def write_localisation_file(output_path, extra_keys=None):
     # Stellaris YAML requires a UTF-8 BOM and a leading space on each key.
     with open(output_path, 'w', encoding='utf-8-sig') as f:
-        f.write('l_english:\n continuum:0 "Continuum Present"\n')
+        f.write('l_english:\n continuum:0 "Continuum Present"\n continuum_aged:0 "Continuum Aged"\n')
         for key, value in (extra_keys or {}).items():
             safe = str(value).replace('"', r'\"')
             f.write(f' {key}:0 "{safe}"\n')
 
-def write_map_file(systems_list, nebulas_list, wormhole_pairs, output_path, loc_data, spawn_ids=None, player_system_id=None, spawn_weights=None):
+def write_map_file(systems_list, nebulas_list, wormhole_pairs, output_path, loc_data, spawn_ids=None, player_system_id=None, spawn_weights=None, scenario_name="continuum", init_prefix="continuum_system_init", galaxy_star_flags=None):
     if not systems_list: return
 
     wormhole_flags_by_system = {}
     for i, pair in enumerate(wormhole_pairs):
         flag = f"continuum_wormhole_{i}"
-        wormhole_flags_by_system[pair[0]] = flag
-        wormhole_flags_by_system[pair[1]] = flag
+        wormhole_flags_by_system[str(pair[0])] = flag
+        wormhole_flags_by_system[str(pair[1])] = flag
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write('static_galaxy_scenario = {\n')
-        f.write('\tname = "continuum"\n')
+        f.write(f'\tname = "{scenario_name}"\n')
         f.write('\tpriority = 10\n')
         f.write('\tnum_empires = { min = 1 max = 8 }\n')
         f.write('\tnum_empire_default = 1\n')
@@ -835,11 +835,15 @@ def write_map_file(systems_list, nebulas_list, wormhole_pairs, output_path, loc_
             sys_id, sys_name = system.get('id'), system.get('name', f"Sys_{system.get('id')}").replace('"', '')
             sys_name = re.sub(r"\s[ABC]$", "", sys_name).strip() or sys_name
             sys_x, sys_y = system.get('x', '0'), system.get('y', '0')
-            initializer_name = f"continuum_system_init_{sys_id}"
+            initializer_name = f"{init_prefix}_{sys_id}"
             
+            flag_bits = list(galaxy_star_flags or [])
+            if str(sys_id) in wormhole_flags_by_system:
+                flag_bits.append(wormhole_flags_by_system[str(sys_id)])
             flag_string = ""
-            if sys_id in wormhole_flags_by_system:
-                flag_string = f' effect = {{ set_star_flag = {wormhole_flags_by_system[sys_id]} }}'
+            if flag_bits:
+                inner = " ".join(f"set_star_flag = {fl}" for fl in flag_bits)
+                flag_string = f' effect = {{ {inner} }}'
 
             weight = ""
             if spawn_weights and str(sys_id) in spawn_weights:
@@ -850,13 +854,14 @@ def write_map_file(systems_list, nebulas_list, wormhole_pairs, output_path, loc_
             f.write(f'\tsystem = {{ id = "{sys_id}" name = "{sys_name}" position = {{ x = {sys_x} y = {sys_y} }} initializer = {initializer_name}{flag_string}{weight} }}\n')
 
         f.write('\n\t# --- Hyperlane Definitions ---\n')
-        processed_lanes, systems_dict = set(), {s['id']: s for s in systems_list}
+        processed_lanes, systems_dict = set(), {str(s['id']): s for s in systems_list}
         for system_id, system_data in systems_dict.items():
             for target_id in system_data.get('hyperlanes', []):
-                if target_id in systems_dict:
-                    lane_key = tuple(sorted((system_id, target_id)))
+                tid = str(target_id)
+                if tid in systems_dict:
+                    lane_key = tuple(sorted((str(system_id), tid)))
                     if lane_key not in processed_lanes:
-                        f.write(f'\tadd_hyperlane = {{ from = "{system_id}" to = "{target_id}" }}\n')
+                        f.write(f'\tadd_hyperlane = {{ from = "{system_id}" to = "{tid}" }}\n')
                         processed_lanes.add(lane_key)
 
         if nebulas_list:
@@ -869,7 +874,7 @@ def write_map_file(systems_list, nebulas_list, wormhole_pairs, output_path, loc_
         
         f.write('}\n')
 
-def write_initializer_file(systems_list, parsed_megastructures, start_system_id, output_path, all_mega_definitions, shroud_data, deposit_keys=None, modifier_keys=None, spawn_ids=None, extra_star_flags=None, devastation_system=None, extra_planet_flags=None):
+def write_initializer_file(systems_list, parsed_megastructures, start_system_id, output_path, all_mega_definitions, shroud_data, deposit_keys=None, modifier_keys=None, spawn_ids=None, extra_star_flags=None, devastation_system=None, extra_planet_flags=None, init_prefix="continuum_system_init"):
     if not systems_list: return
     
     megastructures_by_system = defaultdict(list)
@@ -894,6 +899,7 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
         skipped_deposits = defaultdict(int)
         skipped_modifiers = defaultdict(int)
         npc_flags_copied = defaultdict(int)
+        wrote_global_flags = set()
 
         def write_body_init_effects(body, tabs):
             init_effects = []
@@ -938,7 +944,7 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
             sys_id = system.get('id')
             sys_name = system.get('name', f"Sys_{sys_id}").replace('"', '')
             sys_name = re.sub(r"\s[ABC]$", "", sys_name).strip() or sys_name
-            initializer_name = f"continuum_system_init_{sys_id}"
+            initializer_name = f"{init_prefix}_{sys_id}"
             star_class = system.get('system_star_class', 'sc_g')
 
             f.write(f"{initializer_name} = {{\n")
@@ -1139,6 +1145,9 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                         npc_flags_copied[fl] += 1
                     if fl == 'lcluster1':
                         f.write('\t\tsave_global_event_target_as = lcluster1\n')
+                    if fl in ("continuum_galaxy", "continuum_present", "continuum_aged") and fl not in wrote_global_flags:
+                        f.write(f'\t\tset_global_flag = {fl}\n')
+                        wrote_global_flags.add(fl)
                 if has_belts:
                     for belt in system.get('asteroid_belts_data'):
                         belt_type = belt.get('type', 'rocky_asteroid_belt')
@@ -1239,7 +1248,7 @@ def write_on_actions_file(output_path, has_wormholes, has_planet_megas, has_shro
         content += "\t\tcontinuum_empire.13 # traditions\n"
     content += "\t}\n}\n"
     if has_empires:
-        content += "\non_game_start_country = {\n\tevents = {\n\t\tcontinuum_player.1 # Old-prefix restored twin if player copies a Pre empire\n\t\tcontinuum_intro.1 # Continuum briefing\n\t}\n}\n"
+        content += "\non_game_start_country = {\n\tevents = {\n\t\tcontinuum_player.1 # Old-prefix restored twin if player copies a Pre empire\n\t\tcontinuum_intro.1 # Continuum Present briefing\n\t\tcontinuum_intro.2 # Continuum Aged briefing\n\t}\n}\n"
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(content)
@@ -2406,8 +2415,16 @@ def main():
         for i, pid in enumerate(fauna_snap.get("drone_mine_planets") or []):
             empire_plan.setdefault("planet_flags", {}).setdefault(str(pid), []).append(f"continuum_drone_mine_{i}")
         
+        def _galaxy_flags(base, systems, *flags):
+            extra = {str(k): list(v) for k, v in (base or {}).items()}
+            for s in systems:
+                extra.setdefault(str(s.get("id")), []).extend(flags)
+            return extra
+
         output_map_file = os.path.join(output_map_dir, "continuum.txt")
         output_initializer_file = os.path.join(output_init_dir, "continuum_initializers.txt")
+        output_aged_map_file = os.path.join(output_map_dir, "continuum_aged.txt")
+        output_aged_init_file = os.path.join(output_init_dir, "continuum_aged_initializers.txt")
         output_onactions_file = os.path.join(output_onactions_dir, "~~~continuum_on_actions.txt")
         output_wormhole_events_file = os.path.join(output_events_dir, "continuum_wormhole_events.txt")
         output_wormhole_effects_file = os.path.join(output_effects_dir, "continuum_wormhole_effects.txt")
@@ -2423,8 +2440,36 @@ def main():
             log("Save has lgates_activated_globally. Post will activate L-gates on game start.")
             print("Detected open L-Gate network. Continuum will activate L-gates after galaxy gen.")
 
-        write_map_file(galaxy_data, parsed_nebulas, wormhole_pairs, output_map_file, localization, spawn_ids=empire_plan.get("spawn_ids"), spawn_weights=empire_plan.get("spawn_weights"))
-        write_initializer_file(galaxy_data, parsed_megastructures, start_system_id, output_initializer_file, all_mega_definitions, shroud_data, deposit_keys, modifier_keys, spawn_ids=empire_plan.get("spawn_ids"), extra_star_flags=empire_plan.get("extra_flags"), devastation_system=empire_plan.get("devastation_system"), extra_planet_flags=empire_plan.get("planet_flags"))
+        import continuum_aged
+        aged_galaxy, aged_nebulas, lane_stats = continuum_aged.age_galaxy(
+            galaxy_data, parsed_nebulas, existing_wormholes=wormhole_pairs
+        )
+        print(f"Continuum Aged {continuum_aged.AGED_YEARS} years: lanes kept={lane_stats['kept']} dropped={lane_stats['dropped']} added={lane_stats['added']}")
+        if lane_stats.get("bands"):
+            b = lane_stats["bands"]
+            print(f"  drift inner {b.get('inner')} | mid {b.get('mid')} | outer {b.get('outer')}")
+        if lane_stats.get("dropped_lanes"):
+            print("  snapped:", "; ".join(lane_stats["dropped_lanes"]))
+        if lane_stats.get("added_lanes"):
+            print("  new connections:", "; ".join(lane_stats["added_lanes"]))
+        elif lane_stats.get("added") == 0:
+            print("  new connections: none")
+        if lane_stats.get("wormhole_labels"):
+            print("  rim wormholes:", "; ".join(lane_stats["wormhole_labels"]))
+        else:
+            print("  rim wormholes: none")
+        aged_wormholes = list(wormhole_pairs) + list(lane_stats.get("wormholes") or [])
+        sever = continuum_aged.sever_empires(empire_plan, aged_galaxy)
+        empire_plan["aged_sever"] = sever
+        empire_plan["aged_splinters"] = list(sever.get("splinters") or []) + list(sever.get("fe_ftl") or [])
+        aged_owner_flags, aged_planet_flags, aged_spawn = continuum_aged.apply_aged_flags(empire_plan, sever)
+        present_flags = _galaxy_flags(empire_plan.get("extra_flags"), galaxy_data, "continuum_galaxy", "continuum_present")
+        aged_flags = _galaxy_flags(aged_owner_flags, aged_galaxy, "continuum_galaxy", "continuum_aged")
+        write_map_file(galaxy_data, parsed_nebulas, wormhole_pairs, output_map_file, localization, spawn_ids=empire_plan.get("spawn_ids"), spawn_weights=empire_plan.get("spawn_weights"), scenario_name="continuum", init_prefix="continuum_system_init", galaxy_star_flags=["continuum_galaxy", "continuum_present"])
+        write_initializer_file(galaxy_data, parsed_megastructures, start_system_id, output_initializer_file, all_mega_definitions, shroud_data, deposit_keys, modifier_keys, spawn_ids=empire_plan.get("spawn_ids"), extra_star_flags=present_flags, devastation_system=empire_plan.get("devastation_system"), extra_planet_flags=empire_plan.get("planet_flags"), init_prefix="continuum_system_init")
+        aged_spawn_ids = empire_plan.get("aged_spawn_ids") or empire_plan.get("spawn_ids")
+        write_map_file(aged_galaxy, aged_nebulas, aged_wormholes, output_aged_map_file, localization, spawn_ids=aged_spawn_ids, spawn_weights=aged_spawn, scenario_name="continuum_aged", init_prefix="continuum_aged_init", galaxy_star_flags=["continuum_galaxy", "continuum_aged"])
+        write_initializer_file(aged_galaxy, parsed_megastructures, start_system_id, output_aged_init_file, all_mega_definitions, shroud_data, deposit_keys, modifier_keys, spawn_ids=aged_spawn_ids, extra_star_flags=aged_flags, devastation_system=empire_plan.get("devastation_system"), extra_planet_flags=aged_planet_flags, init_prefix="continuum_aged_init")
         loc_extra = {}
         trait_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/traits'))
         civic_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/governments/civics'))
@@ -2440,9 +2485,10 @@ def main():
         write_localisation_file(os.path.join(output_loc_dir, "continuum_l_english.yml"), extra_keys=loc_extra)
         write_mod_descriptor_files(script_dir, stellaris_user_dir)
         
-        write_wormhole_events_file(output_wormhole_events_file, len(wormhole_pairs))
+        n_wh = max(len(wormhole_pairs), len(aged_wormholes))
+        write_wormhole_events_file(output_wormhole_events_file, n_wh)
         write_megastructure_events_file(output_mega_events_file, planet_bound_megas)
-        write_scripted_effects_file(output_wormhole_effects_file, len(wormhole_pairs))
+        write_scripted_effects_file(output_wormhole_effects_file, n_wh)
         if has_shroud_data:
             write_shroud_tunnel_events_file(os.path.join(output_events_dir, "continuum_shroud_events.txt"))
         if has_open_lgates:
@@ -2454,7 +2500,7 @@ def main():
         )
         
         write_on_actions_file(output_onactions_file, 
-                              has_wormholes=(len(wormhole_pairs) > 0), 
+                              has_wormholes=(len(wormhole_pairs) > 0 or len(aged_wormholes) > 0), 
                               has_planet_megas=(len(planet_bound_megas) > 0),
                               has_shroud_enclave=has_shroud_data,
                               has_open_lgates=has_open_lgates,
@@ -2475,7 +2521,7 @@ def main():
                     if os.path.getsize(os.path.join(path_dir, file)) > 0:
                         print(f"- {os.path.relpath(os.path.join(path_dir, file), script_dir)}")
 
-        print("\nTo load your imported game, select the 'Continuum Present' galaxy when starting a New Game.")
+        print("\nTo load your imported game, select 'Continuum Present' or 'Continuum Aged' as Galaxy Size.")
         log("Parser finished successfully.")
     else:
         log("FATAL: Could not parse critical galaxy data.")

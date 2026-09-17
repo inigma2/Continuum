@@ -135,6 +135,7 @@ def _flag_file(val, fallback):
 
 def _set_shared_loc(loc_entries):
     loc_entries["continuum_intro_title"] = "Continuum Present"
+    loc_entries["continuum_intro_title_aged"] = "Continuum Aged"
     loc_entries["continuum_intro_ok"] = "Begin"
     loc_entries["continuum_intro_present"] = _welcome(
         "Only a few years have passed. The old empires still hold their space. "
@@ -158,6 +159,19 @@ def _set_shared_loc(loc_entries):
     )
     loc_entries["continuum_intro_copy"] = _welcome(
         "Another empire already uses this government. They still hold their space. "
+        "You are a new polity under the same banner — not their heir. You keep your name."
+    )
+    try:
+        import continuum_aged
+        years = int(continuum_aged.AGED_YEARS)
+    except Exception:
+        years = 1000
+    loc_entries["continuum_intro_aged"] = _welcome(
+        f"It has been {years:,} years. The old empires have drifted with the sky. "
+        "You are a new political entity in their galaxy — not their heir."
+    )
+    loc_entries["continuum_intro_aged_copy"] = _welcome(
+        f"It has been {years:,} years. Another empire already uses this government. "
         "You are a new polity under the same banner — not their heir. You keep your name."
     )
 
@@ -277,7 +291,14 @@ country_event = {{
 	id = continuum_player.1
 	is_triggered_only = yes
 	hide_window = yes
-	trigger = {{ is_ai = no }}
+	trigger = {{
+		is_ai = no
+		OR = {{
+			galaxy_size = continuum
+			galaxy_size = continuum_aged
+			has_global_flag = continuum_galaxy
+		}}
+	}}
 	immediate = {{
 {rename_txt}
 	}}
@@ -301,6 +322,22 @@ def emit_intro_event(restored, loc_entries, had_crisis=False):
         )
     desc_copy_txt = ("\n".join(desc_copy) + "\n") if desc_copy else ""
     crisis_flag = "			set_global_flag = continuum_had_crisis\n" if had_crisis else ""
+    aged_copy_txt = ""
+    if cases:
+        ands = []
+        for case in cases:
+            inner = "\n".join("				" + ln for ln in case["lines"])
+            ands.append("			AND = {\n" + inner + "\n			}")
+        aged_copy_txt = (
+            "	desc = {\n"
+            "		trigger = {\n"
+            "			OR = {\n"
+            + "\n".join(ands)
+            + "\n			}\n"
+            "		}\n"
+            "		text = continuum_intro_aged_copy\n"
+            "	}\n"
+        )
     return f"""namespace = continuum_intro
 country_event = {{
 	id = continuum_intro.1
@@ -334,7 +371,13 @@ country_event = {{
 	desc = continuum_intro_present
 	picture = GFX_evt_throne_room
 	show_sound = event_default
-	trigger = {{ is_ai = no }}
+	trigger = {{
+		is_ai = no
+		OR = {{
+			galaxy_size = continuum
+			has_global_flag = continuum_present
+		}}
+	}}
 	immediate = {{
 		if = {{
 			limit = {{ has_global_flag = continuum_intro_done }}
@@ -342,6 +385,33 @@ country_event = {{
 		else = {{
 			set_global_flag = continuum_intro_done
 {crisis_flag}		}}
+	}}
+	option = {{
+		name = continuum_intro_ok
+	}}
+}}
+
+country_event = {{
+	id = continuum_intro.2
+	is_triggered_only = yes
+	title = continuum_intro_title_aged
+{aged_copy_txt}	desc = continuum_intro_aged
+	picture = GFX_evt_throne_room
+	show_sound = event_default
+	trigger = {{
+		is_ai = no
+		OR = {{
+			galaxy_size = continuum_aged
+			has_global_flag = continuum_aged
+		}}
+	}}
+	immediate = {{
+		if = {{
+			limit = {{ has_global_flag = continuum_intro_done }}
+		}}
+		else = {{
+			set_global_flag = continuum_intro_done
+		}}
 	}}
 	option = {{
 		name = continuum_intro_ok
