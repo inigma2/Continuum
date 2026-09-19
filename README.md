@@ -4,9 +4,15 @@ A Stellaris galaxy converter — one galaxy to rule them all.
 
 Turn a finished (or mid-game) save into a playable **static galaxy** for a new game. The Python parser reads your `.sav` and writes the imported galaxy into the Continuum mod folder.
 
-- **Current:** 0.8.3 for Stellaris **4.4.*** (Pegasus) — **Continuum Present** and **Continuum Aged**
+- **Current:** 0.8.4 for Stellaris **4.4.*** (Pegasus) — **Continuum Present** and **Continuum Aged**
 - Workshop: https://steamcommunity.com/sharedfiles/filedetails/?id=3554276594
 - Roadmap: https://steamcommunity.com/workshop/filedetails/discussion/3554276594/596284386694022138/
+
+## 0.8.4
+
+Aged weeding: keep / preserve / extinct by ranked thirds (50/50 pops:systems). Fallow **24–34%**. No country over **20%** of the galaxy. Large cores over **10%** get 1–5 fringe breakaways (system names, inverted ethics). Civil wars split some keep empires. Clockwise drift. Hyperlanes at Pre density (old short links kept). Unclaimed hyper relays spawn ruined. Pre primitives FTL by **age** (stone stays more often; early space usually flies); leftover pre-FTLs remain; **new** pre-FTLs appear on fallow habitables.
+
+Fallen conversion, archaeology, Merged, and an age slider are **not** in 0.8.4.
 
 ## 0.8.3
 
@@ -14,11 +20,9 @@ One parse emits **two** galaxy sizes. Date stays **2200**. You are always a **ne
 
 **Continuum Present** — the imported sky a few years on. Pre empires still hold their space.
 
-**Continuum Aged** — the same sky ~10,000 years later. Inner systems have rotated far, outer ones little. Hyperlanes are a new local net (vanilla-like neighbors, no crossings, similar density). Empires split on that graph: the capital-linked remnant keeps the old name; disconnected habitable blobs become new default empires with unique government-matching names; empty cutoffs are fallow. Most Pre primitives reach FTL. Habitat-only cutoffs are void dwellers or fallow. Fallen space stays Fallen only on the capital net; a leftover habitable blob may become a young default (starport, not a citadel).
+**Continuum Aged** — the same sky thousands of years later. Inner systems have rotated far, outer ones little. Hyperlanes are a new local net (vanilla-like neighbors, no crossings, similar density). Empires split on that graph: the capital-linked remnant keeps the old name; disconnected habitable blobs become new default empires; empty cutoffs are fallow. Most Pre primitives reach FTL. Habitat-only cutoffs are void dwellers or fallow. Fallen space stays Fallen only on the capital net.
 
-Copy-match in Present is still **Old {name}**. Aged copy-match is a remnant or successor, not a full-strength twin.
-
-Ranking (advanced / new Fallen), FE graves, crisis history, and battle archaeology are **not** in 0.8.3.
+Copy-match in Present is still **Old {name}**.
 
 ## How to use
 

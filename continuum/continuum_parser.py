@@ -16,7 +16,7 @@ if sys.platform == "win32":
 
 # --- CONFIGURATION ---
 SUPPORTED_STELLARIS_VERSION = "4.4"
-MOD_VERSION = "0.8.3"
+MOD_VERSION = "0.8.4"
 VANILLA_GALAXY_SHAPES = (
     "elliptical",
     "spiral_2",
@@ -874,6 +874,28 @@ def write_map_file(systems_list, nebulas_list, wormhole_pairs, output_path, loc_
         
         f.write('}\n')
 
+
+_RUIN_MEGA = {
+    "hyper_relay": "hyper_relay_ruined",
+    "gateway_0": "gateway_ruined",
+    "gateway_final": "gateway_ruined",
+    "gateway_restored": "gateway_ruined",
+}
+
+
+def _ruin_unclaimed_mega(mega_type, sys_id, extra_star_flags):
+    """Aged fallow/unclaimed: relays and gateways spawn ruined until repaired."""
+    t = mega_type or ""
+    fls = (extra_star_flags or {}).get(str(sys_id)) or []
+    owned = any(re.fullmatch(r"continuum_(emp|spl|fe|prim)_\d+", str(f)) for f in fls)
+    if owned:
+        return t
+    aged = "continuum_aged" in fls or "continuum_aged_fallow" in fls
+    if not aged:
+        return t
+    return _RUIN_MEGA.get(t, t)
+
+
 def write_initializer_file(systems_list, parsed_megastructures, start_system_id, output_path, all_mega_definitions, shroud_data, deposit_keys=None, modifier_keys=None, spawn_ids=None, extra_star_flags=None, devastation_system=None, extra_planet_flags=None, init_prefix="continuum_system_init"):
     if not systems_list: return
     
@@ -1155,7 +1177,7 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                         f.write(f'\t\tadd_asteroid_belt = {{ radius = {belt_radius:.2f} type = {belt_type} }}\n')
                 if has_megas:
                     for mega in megastructures_by_system[sys_id]:
-                        mega_type = mega.get("type")
+                        mega_type = _ruin_unclaimed_mega(mega.get("type"), sys_id, extra_star_flags)
                         param_dict = {'type': f'type = {mega_type}'}
                         if 'name' in mega:
                             clean_name = mega["name"].replace('"', '\\"')

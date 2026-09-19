@@ -76,7 +76,8 @@ def _apply_spin(x, y, cx, cy, rmax, years=None):
     dx, dy = x - cx, y - cy
     r = math.hypot(dx, dy)
     frac = (r / rmax) if rmax else 0.0
-    dtheta = math.radians(spin_degrees(frac))
+    # Negative angle = clockwise on the galaxy map (trailing spiral arms).
+    dtheta = -math.radians(spin_degrees(frac))
     c, s = math.cos(dtheta), math.sin(dtheta)
     return cx + dx * c - dy * s, cy + dx * s + dy * c
 
@@ -306,12 +307,18 @@ def rebuild_hyperlanes(galaxy_data, orig_pairs, cx, cy, rmax):
                 try_add(a, b, "keep")
             continue
         za, zb = _zone(frac[a]), _zone(frac[b])
-        if za == "inner" and zb == "inner":
-            dropped.append((a, b, "inner-rebuild"))
-            continue
         near_a = set(_k_nearest(a, galactic, pos, k=4))
         near_b = set(_k_nearest(b, galactic, pos, k=4))
         still_near = b in near_a or a in near_b
+        # Inner: keep Pre if it is still a short local link; don't dump all inner Pre.
+        if za == "inner" and zb == "inner":
+            dd = _dist(by_id[a], by_id[b])
+            if still_near and dd <= max_new:
+                if not try_add(a, b, "keep"):
+                    dropped.append((a, b, "cross-or-dup"))
+            else:
+                dropped.append((a, b, "inner-stretched"))
+            continue
         if za == "outer" or zb == "outer":
             if still_near:
                 if not try_add(a, b, "keep"):
@@ -326,18 +333,21 @@ def rebuild_hyperlanes(galaxy_data, orig_pairs, cx, cy, rmax):
         else:
             dropped.append((a, b, "not-near"))
 
-    # Inner: 3 nearest. Mid/outer: fill to 2–3 nearest if sparse.
+    # Fill sparse systems only while under Pre lane count. Prefer old leftover Pre.
+    pre_target = len(orig_pairs)
     for sid in galactic:
         z = _zone(frac[sid])
         want = 2 if z == "outer" else 3
-        if z == "inner":
-            want = 3
+        if len(adj[sid]) >= want:
+            continue
         pool = _k_nearest(sid, galactic, pos, k=want + 4)
         stable_first = [oid for oid in pool if not _is_unstable_star(by_id[oid])] + [
             oid for oid in pool if _is_unstable_star(by_id[oid])
         ]
         for oid in stable_first:
             if len(adj[sid]) >= want:
+                break
+            if _n_lanes(adj) >= pre_target:
                 break
             try_add(sid, oid, "new")
 
@@ -378,10 +388,12 @@ def rebuild_hyperlanes(galaxy_data, orig_pairs, cx, cy, rmax):
                             best = (dd, sid, oid)
         if not best:
             break
+        if _n_lanes(adj) >= pre_target:
+            break
         if not try_add(best[1], best[2], "new") and not try_add(best[1], best[2], "new", force=True):
             forbidden.add(tuple(sorted((best[1], best[2]))))
 
-    _trim_to_pre_density(adj, pos, new_set, target=len(orig_pairs))
+    _trim_to_pre_density(adj, pos, new_set, target=pre_target)
 
     # Keep L-cluster internal Pre lanes already added; don't stitch cluster to galaxy.
 
@@ -420,8 +432,8 @@ def _still_connected(adj, a, b):
 
 
 def _trim_to_pre_density(adj, pos, new_set, target):
-    """Drop longest new non-bridge lanes until count is near Pre."""
-    ceiling = int(target * 1.03)
+    """Drop longest new non-bridge lanes until count is at or below Pre."""
+    ceiling = int(target)
     while _n_lanes(adj) > ceiling and new_set:
         cands = []
         for a, b in list(new_set):
@@ -645,6 +657,23 @@ def _habitat_only(comp, emp, p2s, habitats, pclass=None):
     return any(str(s) in habitats for s in comp)
 
 
+def _hops_from(adj, src):
+    if not src:
+        return {}
+    dist = {str(src): 0}
+    q = [str(src)]
+    i = 0
+    while i < len(q):
+        u = q[i]
+        i += 1
+        for v in adj.get(u, ()):
+            v = str(v)
+            if v not in dist:
+                dist[v] = dist[u] + 1
+                q.append(v)
+    return dist
+
+
 def _tiny_outpost(comp, emp, p2s):
     n_col, pops = 0, 0
     for sid in comp:
@@ -696,6 +725,49 @@ def _filter_emp_to_systems(emp, comp, p2s, c2p=None):
         import continuum_empires as ce
         spl["starbases"] = ce.clamp_default_starbases(spl.get("starbases") or {})
     return spl
+
+
+def _emp_score(emp, syss):
+    pops = 0
+    for v in (emp.get("colony_pop") or {}).values():
+        try:
+            pops += int(v)
+        except (TypeError, ValueError):
+            pass
+    return (pops, len(emp.get("colony_pop") or {}), len(syss or []))
+
+
+def _weed_defaults(defaults, bled, rng):
+    """Keep top third, preserve middle third, extinct bottom third. 50/50 pops:systems."""
+    rows = []
+    for emp in defaults:
+        cid = emp["id"]
+        pops, _ncol, n_sys = _emp_score(emp, bled.get(cid) or [])
+        rows.append((pops, n_sys, cid, emp.get("name")))
+    max_p = max((r[0] for r in rows), default=1) or 1
+    max_s = max((r[1] for r in rows), default=1) or 1
+    ranked = sorted(
+        rows,
+        key=lambda r: 0.5 * (r[0] / max_p) + 0.5 * (r[1] / max_s),
+        reverse=True,
+    )
+    n = len(ranked)
+    if n == 0:
+        return set(), set(), set()
+    n_keep = max(1, n // 3)
+    n_preserve = n // 3
+    keep = {cid for _p, _s, cid, _n in ranked[:n_keep]}
+    preserve = {cid for _p, _s, cid, _n in ranked[n_keep : n_keep + n_preserve]}
+    extinct = {cid for _p, _s, cid, _n in ranked[n_keep + n_preserve :]}
+    print(
+        "Aged weed: keep "
+        + ", ".join(str(n) for _p, _s, _c, n in ranked[:n_keep])
+        + " | preserve "
+        + ", ".join(str(n) for _p, _s, _c, n in ranked[n_keep : n_keep + n_preserve])
+        + " | extinct "
+        + ", ".join(str(n) for _p, _s, _c, n in ranked[n_keep + n_preserve :])
+    )
+    return keep, preserve, extinct
 
 
 def sever_empires(plan, aged_galaxy):
@@ -758,14 +830,25 @@ def sever_empires(plan, aged_galaxy):
     for sid, cid in owner.items():
         bled[cid].append(sid)
 
+    keep_ids, preserve_ids, extinct_ids = _weed_defaults(defaults, bled, rng)
+    plan["aged_keep_ids"] = keep_ids
+    plan["aged_preserve_ids"] = preserve_ids
+    plan["aged_extinct_ids"] = extinct_ids
+
     fallow = set()
     keep_fallow = set()
     remnant = {}
     splinters = []
     names_by_sys = names
 
+    for cid in extinct_ids:
+        fallow.update(str(s) for s in (bled.get(cid) or []))
+
     for idx, emp in enumerate(defaults):
         cid = emp["id"]
+        if cid in extinct_ids:
+            remnant[cid] = []
+            continue
         syss = bled.get(cid) or []
         comps = _components(adj, syss) if syss else []
         hab, empty = [], []
@@ -805,7 +888,10 @@ def sever_empires(plan, aged_galaxy):
 
         ones = [c for c in hab if len(c) == 1]
         multi = [c for c in hab if len(c) > 1]
-        k = min(5, len(ones) // 4)
+        if cid in preserve_ids:
+            k = min(2, len(ones) // 8)
+        else:
+            k = min(3, len(ones) // 6)
         rng.shuffle(ones)
         chosen, leftover = ones[:k], ones[k:]
         for comp in leftover:
@@ -831,6 +917,44 @@ def sever_empires(plan, aged_galaxy):
                 spl["_void"] = True
                 spl["origin"] = "origin_void_dwellers"
             splinters.append(spl)
+
+    # At least one third of large kept empires split 2–3 ways (civil war / uprising).
+    large_keep = [c for c in keep_ids if len(remnant.get(c) or []) >= 8]
+    n_cw = max(1, (len(large_keep) + 2) // 3) if large_keep else 0
+    cw_pick = list(large_keep)
+    rng.shuffle(cw_pick)
+    for cid in cw_pick[:n_cw]:
+        emp = emp_by_id.get(cid)
+        if not emp:
+            continue
+        idx = next((i for i, e in enumerate(defaults) if e["id"] == cid), 0)
+        syss = [str(s) for s in (remnant.get(cid) or [])]
+        cap = str(capitals.get(cid) or (syss[0] if syss else ""))
+        hops = _hops_from(adj, cap)
+        med = sorted(hops.get(s, 0) for s in syss)[len(syss) // 2] if syss else 0
+        far = [s for s in syss if s != cap and hops.get(s, 0) >= max(2, med)]
+        comps = [c for c in _components(adj, far) if _comp_habitable(c, emp, p2s, habitats)]
+        comps.sort(key=len, reverse=True)
+        n_extra = 2 if len(syss) >= 20 and rng.random() < 0.45 else 1
+        taken = 0
+        for comp in comps:
+            if taken >= n_extra:
+                break
+            left = len(remnant.get(cid) or []) - len(comp)
+            if left < 4:
+                continue
+            drop = {str(x) for x in comp}
+            remnant[cid] = [x for x in remnant[cid] if str(x) not in drop]
+            spl = _filter_emp_to_systems(emp, comp, p2s, c2p)
+            spl["origin"] = "origin_default"
+            spl["_civil_war"] = True
+            spl["_parent_idx"] = idx
+            spl["_parent_id"] = cid
+            spl["_home"] = names_by_sys.get(str(comp[0]), "")
+            splinters.append(spl)
+            taken += 1
+        if taken:
+            print(f"Aged civil war: {emp.get('name')} -> {taken + 1} states")
 
     fe_remnant = {}
     fe_ftl = []
@@ -866,28 +990,28 @@ def sever_empires(plan, aged_galaxy):
         for comp in extra_hab:
             fallow.update(comp)
 
-    # Fill holes: fallow systems that touch a remnant join that remnant.
+    def _rem_of():
+        m = {}
+        for cid, syss in remnant.items():
+            for s in syss:
+                m[str(s)] = cid
+        return m
+
+    # Interior holes only: fallow fully surrounded by one remnant.
     changed = True
     while changed:
         changed = False
-        rem_of = {}
-        for cid, syss in remnant.items():
-            for s in syss:
-                rem_of[str(s)] = cid
+        rem_of = _rem_of()
         for sid in list(fallow):
-            if sid in keep_fallow:
+            if sid in keep_fallow or sid in spawn:
                 continue
-            nbs = [rem_of[n] for n in adj.get(sid, ()) if n in rem_of]
-            if not nbs:
-                continue
-            counts = {}
-            for c in nbs:
-                counts[c] = counts.get(c, 0) + 1
-            cid = max(counts, key=counts.get)
-            remnant.setdefault(cid, []).append(sid)
-            fallow.discard(sid)
-            changed = True
-        # Same for 1-system splinters that now touch their parent remnant.
+            nbs = list(adj.get(str(sid), ()))
+            owners = [rem_of[str(n)] for n in nbs if str(n) in rem_of]
+            foreign = [n for n in nbs if str(n) not in fallow and str(n) not in rem_of]
+            if len(set(owners)) == 1 and not foreign:
+                remnant.setdefault(owners[0], []).append(str(sid))
+                fallow.discard(str(sid))
+                changed = True
         keep_spl = []
         for spl in splinters:
             syss = [str(s) for s in (spl.get("_systems") or [])]
@@ -896,6 +1020,8 @@ def sever_empires(plan, aged_galaxy):
             if (
                 len(syss) == 1
                 and not spl.get("_void")
+                and not spl.get("_civil_war")
+                and not spl.get("_buffer")
                 and any(n in rem for n in adj.get(syss[0], ()))
             ):
                 remnant.setdefault(parent, []).append(syss[0])
@@ -904,15 +1030,308 @@ def sever_empires(plan, aged_galaxy):
             keep_spl.append(spl)
         splinters = keep_spl
 
+    # Kept empires reclaim their own cut-off systems, then 1 hop into foreign fallow.
+    # Extinct cores stay empty so the player has room.
+    own_former = {cid: {str(s) for s in (bled.get(cid) or [])} for cid in keep_ids}
+    for _hop in range(2):
+        claimed = []
+        for cid in keep_ids:
+            former = own_former.get(cid) or set()
+            for sid in list(remnant.get(cid) or []):
+                for n in adj.get(str(sid), ()):
+                    n = str(n)
+                    if n in spawn or n in keep_fallow or n not in fallow:
+                        continue
+                    if n in former or (_hop == 0 and rng.random() < 0.35):
+                        claimed.append((cid, n))
+        for cid, n in claimed:
+            if n in fallow:
+                remnant.setdefault(cid, []).append(n)
+                fallow.discard(n)
+
+    keep_spl = []
+    for spl in splinters:
+        syss = [str(s) for s in (spl.get("_systems") or [])]
+        parent = spl.get("_parent_id")
+        rem = set(str(s) for s in (remnant.get(parent) or []))
+        if (
+            syss
+            and not spl.get("_void")
+            and not spl.get("_civil_war")
+            and not spl.get("_buffer")
+            and any(any(str(n) in rem for n in adj.get(s, ())) for s in syss)
+        ):
+            remnant.setdefault(parent, []).extend(syss)
+            continue
+        keep_spl.append(spl)
+    splinters = keep_spl
+
+    n_sys = max(1, len(aged_galaxy))
+    target_frac = rng.uniform(0.24, 0.34)
+    target_n = int(round(target_frac * n_sys))
+
+    def _shrink_cid(cid, min_keep):
+        syss = [str(s) for s in (remnant.get(cid) or [])]
+        if len(syss) <= min_keep:
+            return False
+        cap = str(capitals.get(cid) or (syss[0] if syss else ""))
+        hops = _hops_from(adj, cap)
+        cands = [s for s in syss if s != cap and s not in spawn]
+        cands.sort(key=lambda s: hops.get(s, 99), reverse=True)
+        if not cands:
+            return False
+        s = cands[0]
+        remnant[cid] = [x for x in remnant[cid] if str(x) != s]
+        fallow.add(s)
+        return True
+
+    while len(fallow) < target_n:
+        shrunk = False
+        for cid in list(preserve_ids):
+            if _shrink_cid(cid, 2):
+                shrunk = True
+                break
+        if shrunk:
+            continue
+        for cid in list(keep_ids):
+            if _shrink_cid(cid, 8):
+                shrunk = True
+                break
+        if shrunk:
+            continue
+        extras = [
+            s for s in splinters
+            if not s.get("_civil_war") and not s.get("_buffer") and len(s.get("_systems") or []) <= 2
+        ]
+        if extras:
+            extras.sort(key=lambda s: len(s.get("_systems") or []))
+            spl = extras[0]
+            splinters = [s for s in splinters if s is not spl]
+            fallow.update(str(x) for x in (spl.get("_systems") or []))
+            continue
+        break
+    max_own = max(1, int(0.20 * n_sys))
+
+    def _peel_far(syss, cap, n_drop):
+        hops = _hops_from(adj, cap)
+        cands = [str(s) for s in syss if str(s) != str(cap) and str(s) not in spawn]
+        cands.sort(key=lambda s: hops.get(s, 99), reverse=True)
+        return cands[:n_drop]
+
+    def _make_rival(parent_emp, parent_idx, parent_cid, syss):
+        if not parent_emp or not syss:
+            return
+        hab = [c for c in _components(adj, syss) if _comp_habitable(c, parent_emp, p2s, habitats)]
+        if not hab:
+            fallow.update(str(s) for s in syss)
+            return
+        for comp in hab:
+            spl = _filter_emp_to_systems(parent_emp, comp, p2s, c2p)
+            spl["origin"] = "origin_default"
+            spl["_civil_war"] = True
+            spl["_parent_idx"] = parent_idx
+            spl["_parent_id"] = parent_cid
+            spl["_home"] = names_by_sys.get(str(comp[0]), "")
+            splinters.append(spl)
+        leftover = set(str(s) for s in syss) - {str(s) for c in hab for s in c}
+        fallow.update(leftover)
+
+    idx_of = {e["id"]: i for i, e in enumerate(defaults)}
+    for cid in list(keep_ids) + list(preserve_ids):
+        syss = [str(s) for s in (remnant.get(cid) or [])]
+        if len(syss) <= max_own:
+            continue
+        cap = str(capitals.get(cid) or (syss[0] if syss else ""))
+        extra = _peel_far(syss, cap, len(syss) - max_own)
+        drop = set(extra)
+        remnant[cid] = [x for x in remnant[cid] if str(x) not in drop]
+        if len(fallow) < target_n:
+            need = target_n - len(fallow)
+            to_fallow, to_rival = extra[:need], extra[need:]
+            fallow.update(to_fallow)
+            if to_rival:
+                _make_rival(emp_by_id.get(cid), idx_of.get(cid, 0), cid, to_rival)
+        else:
+            _make_rival(emp_by_id.get(cid), idx_of.get(cid, 0), cid, extra)
+        print(f"Aged 20% cap: {emp_by_id.get(cid, {}).get('name')} now {len(remnant.get(cid) or [])} systems")
+
+    for spl in list(splinters):
+        syss = [str(s) for s in (spl.get("_systems") or [])]
+        if len(syss) <= max_own:
+            continue
+        cap = syss[0]
+        extra = _peel_far(syss, cap, len(syss) - max_own)
+        drop = set(extra)
+        spl["_systems"] = [x for x in syss if x not in drop]
+        parent = emp_by_id.get(spl.get("_parent_id"))
+        if len(fallow) < target_n:
+            need = target_n - len(fallow)
+            fallow.update(extra[:need])
+            rest = extra[need:]
+            if rest and parent:
+                _make_rival(parent, spl.get("_parent_idx") or 0, spl.get("_parent_id"), rest)
+        elif parent:
+            _make_rival(parent, spl.get("_parent_idx") or 0, spl.get("_parent_id"), extra)
+
+    fat = max(1, int(0.10 * n_sys))
+    buf_max = 10
+
+    def _border_syss(syss, cap):
+        owned = {str(s) for s in syss}
+        hops = _hops_from(adj, cap)
+        out = []
+        for s in syss:
+            s = str(s)
+            if s == str(cap) or s in spawn:
+                continue
+            if any(str(n) not in owned for n in adj.get(s, ())):
+                out.append(s)
+        out.sort(key=lambda s: hops.get(s, 99), reverse=True)
+        return out
+
+    def _chunk_border(take):
+        pieces = []
+        for comp in _components(adj, take):
+            cur = [str(x) for x in comp]
+            while cur:
+                pieces.append(cur[:buf_max])
+                cur = cur[buf_max:]
+        return pieces
+
+    def _emit_buffers(parent_emp, parent_idx, parent_cid, pieces):
+        n_buf = 0
+        extra = pieces[5:]
+        pieces = pieces[:5]
+        if extra:
+            fallow.update(str(s) for p in extra for s in p)
+        if not parent_emp:
+            fallow.update(str(s) for p in pieces for s in p)
+            return 0
+        for piece in pieces:
+            if not piece:
+                continue
+            spl = _filter_emp_to_systems(parent_emp, piece, p2s, c2p)
+            spl["origin"] = "origin_default"
+            spl["_buffer"] = True
+            spl["_parent_idx"] = parent_idx
+            spl["_parent_id"] = parent_cid
+            spl["_home"] = names_by_sys.get(str(piece[0]), "")
+            splinters.append(spl)
+            n_buf += 1
+        return n_buf
+
+    for cid in list(keep_ids) + list(preserve_ids):
+        syss = [str(s) for s in (remnant.get(cid) or [])]
+        if len(syss) <= fat:
+            continue
+        n_peel = min(max(1, len(syss) // 5), len(syss) - fat)
+        cap = str(capitals.get(cid) or (syss[0] if syss else ""))
+        take = _border_syss(syss, cap)[:n_peel]
+        if not take:
+            continue
+        drop = set(take)
+        remnant[cid] = [x for x in remnant[cid] if str(x) not in drop]
+        n_buf = _emit_buffers(emp_by_id.get(cid), idx_of.get(cid, 0), cid, _chunk_border(take))
+        print(
+            f"Aged buffer: {emp_by_id.get(cid, {}).get('name')} peeled {len(take)} "
+            f"-> {n_buf} fringe (1-{buf_max}) core {len(remnant.get(cid) or [])} "
+            f"({100 * len(remnant.get(cid) or []) / n_sys:.1f}%)"
+        )
+
+    for spl in list(splinters):
+        if spl.get("_buffer"):
+            continue
+        syss = [str(s) for s in (spl.get("_systems") or [])]
+        if len(syss) <= fat:
+            continue
+        n_peel = min(max(1, len(syss) // 5), len(syss) - fat)
+        take = _border_syss(syss, syss[0])[:n_peel]
+        if not take:
+            continue
+        drop = set(take)
+        spl["_systems"] = [x for x in syss if x not in drop]
+        parent = emp_by_id.get(spl.get("_parent_id"))
+        n_buf = _emit_buffers(parent, spl.get("_parent_idx") or 0, spl.get("_parent_id"), _chunk_border(take))
+        print(
+            f"Aged buffer: splinter {spl.get('_home')} peeled {len(take)} -> {n_buf} fringe"
+        )
+
+    print(
+        f"Aged fallow target {target_frac:.0%} ({target_n}/{n_sys}) actual {len(fallow)} "
+        f"({len(fallow) / n_sys:.0%}) splinters_left={len(splinters)} cap={max_own} fat={fat}"
+    )
+
     prims = list(plan.get("primitives") or [])
     prim_ftl = []
     import continuum_empires as ce
+    _FTL_P = {
+        "stone_age": 0.15, "bronze_age": 0.22, "iron_age": 0.30,
+        "late_medieval_age": 0.45, "renaissance_age": 0.55, "steam_age": 0.68,
+        "industrial_age": 0.80, "machine_age": 0.85, "atomic_age": 0.90,
+        "early_space_age": 0.95,
+    }
     for i, p in enumerate(prims):
         sp = (plan.get("species") or {}).get(str(p.get("founder_species"))) or {}
         if ce.is_hive(p, sp) or ce.is_machine(p, sp):
             prim_ftl.append(i)
-        elif rng.random() < 0.75:
+            continue
+        chance = _FTL_P.get(p.get("pre_ftl_age") or "", 0.55)
+        if rng.random() < chance:
             prim_ftl.append(i)
+    print(f"Aged prim_ftl {len(prim_ftl)}/{len(prims)} (age-weighted)")
+
+    occupied = set(spawn)
+    for syss in remnant.values():
+        occupied.update(str(s) for s in syss)
+    for spl in splinters + fe_ftl:
+        occupied.update(str(s) for s in (spl.get("_systems") or []))
+    for p in prims:
+        if p.get("system_id"):
+            occupied.add(str(p["system_id"]))
+    blocked = (
+        "guardians_", "lcluster", "marauder", "shroud", "enclave", "lgate",
+        "terminal_egress", "wenkwort", "tiyanki", "void3", "crisis",
+    )
+    cands = []
+    for s in aged_galaxy:
+        sid = str(s.get("id"))
+        if sid not in fallow or sid in occupied:
+            continue
+        fls = [str(f) for f in (s.get("flags") or [])]
+        if any(any(b in str(f) for b in blocked) for f in fls):
+            continue
+        hab = None
+        q = [s.get("hierarchy_root")]
+        while q:
+            b = q.pop()
+            if not b:
+                continue
+            pc = str(b.get("planet_class") or b.get("class") or "")
+            if ce.is_habitable_class(pc) and b.get("id") is not None:
+                hab = (str(b.get("id")), pc)
+                break
+            q.extend(b.get("children") or [])
+        if hab:
+            cands.append((sid, hab[0], hab[1]))
+    rng.shuffle(cands)
+    n_new = min(8, max(3, len(cands) // 15)) if cands else 0
+    ages = ["stone_age", "stone_age", "bronze_age", "iron_age", "late_medieval_age"]
+    classes = ["MAM", "REP", "AVI", "MOL", "ART", "FUN"]
+    namelists = {"MAM": "MAM1", "REP": "REP1", "AVI": "AVI1", "MOL": "MOL1", "ART": "ART1", "FUN": "FUN1"}
+    new_prims = []
+    for sid, pid, pc in cands[:n_new]:
+        cls = rng.choice(classes)
+        new_prims.append({
+            "system_id": sid,
+            "planet_id": pid,
+            "planet_class": pc,
+            "age": rng.choice(ages),
+            "class": cls,
+            "namelist": namelists.get(cls, "MAM1"),
+        })
+        fallow.discard(sid)
+    plan["aged_new_prims"] = new_prims
+    print(f"Aged new pre-FTLs {len(new_prims)}")
 
     return {
         "remnant": remnant,
@@ -938,8 +1357,8 @@ def apply_aged_flags(plan, sever):
     """Rebuild Aged star/planet flags: remnant, splinters, fallow, prim FTL."""
     import continuum_empires as ce
 
-    flags = _strip_owner_flags(plan.get("extra_flags"), ("continuum_emp_", "continuum_fe_", "continuum_prim_", "continuum_spl_"))
-    planet_flags = _strip_owner_flags(plan.get("planet_flags"), ("continuum_emp_", "continuum_fe_", "continuum_prim_", "continuum_spl_"))
+    flags = _strip_owner_flags(plan.get("extra_flags"), ("continuum_emp_", "continuum_fe_", "continuum_prim_", "continuum_spl_", "continuum_newprim_"))
+    planet_flags = _strip_owner_flags(plan.get("planet_flags"), ("continuum_emp_", "continuum_fe_", "continuum_prim_", "continuum_spl_", "continuum_newprim_"))
     c2p = plan.get("colony_to_planet") or {}
     p2s = plan.get("planet_to_system") or {}
     defaults = list(plan.get("empires") or [])
@@ -1003,12 +1422,22 @@ def apply_aged_flags(plan, sever):
         if sid and idx in prim_ftl:
             spawn.setdefault(str(sid), {"base": 8, "modifiers": []})
             spawn_ids.add(str(sid))
+    for i, np in enumerate(plan.get("aged_new_prims") or []):
+        sid = np.get("system_id")
+        if sid:
+            flags.setdefault(str(sid), []).append(f"continuum_newprim_{i}")
+        pid = np.get("planet_id")
+        if pid:
+            planet_flags.setdefault(str(pid), []).append(f"continuum_newprim_{i}_homeworld")
     plan["aged_spawn_ids"] = spawn_ids
     n_spl = len(sever["splinters"])
     n_fo = len(sever["fallow"])
     n_rem = sum(len(v) for v in remnant.values())
     print(
         f"Aged severance: remnant_systems={n_rem} splinters={n_spl} "
-        f"fe_ftl={len(sever['fe_ftl'])} fallow={n_fo} prim_ftl={len(sever['prim_ftl'])}"
+        f"fe_ftl={len(sever['fe_ftl'])} fallow={n_fo} prim_ftl={len(sever['prim_ftl'])} "
+        f"keep={len(plan.get('aged_keep_ids') or [])} "
+        f"preserve={len(plan.get('aged_preserve_ids') or [])} "
+        f"extinct={len(plan.get('aged_extinct_ids') or [])}"
     )
     return flags, planet_flags, spawn

@@ -139,7 +139,7 @@ def _set_shared_loc(loc_entries):
     loc_entries["continuum_intro_ok"] = "Begin"
     loc_entries["continuum_intro_present"] = _welcome(
         "Only a few years have passed. The old empires still hold their space. "
-        "You are a new political entity in their galaxy — not their heir."
+        "You are a new political entity in their galaxy - not their heir."
     )
     loc_entries["continuum_intro_new"] = _welcome(
         "Your people have reached FTL. The other empires still occupy their cores. "
@@ -159,21 +159,14 @@ def _set_shared_loc(loc_entries):
     )
     loc_entries["continuum_intro_copy"] = _welcome(
         "Another empire already uses this government. They still hold their space. "
-        "You are a new polity under the same banner — not their heir. You keep your name."
+        "You are a new polity under the same banner - not their heir. You keep your name."
     )
-    try:
-        import continuum_aged
-        years = int(continuum_aged.AGED_YEARS)
-    except Exception:
-        years = 1000
     loc_entries["continuum_intro_aged"] = _welcome(
-        f"It has been {years:,} years. The old empires have drifted with the sky. "
-        "You are a new political entity in their galaxy — not their heir."
+        "It has been thousands of years since the oldest maps of them were drawn by the ancients of your people. "
+        "Whatever your history, your future begins now as you have finally acquired the means to travel the stars. "
+        "You have many questions but feel the answers are to be found somewhere, out there, among the stars."
     )
-    loc_entries["continuum_intro_aged_copy"] = _welcome(
-        f"It has been {years:,} years. Another empire already uses this government. "
-        "You are a new polity under the same banner — not their heir. You keep your name."
-    )
+    loc_entries["continuum_intro_aged_copy"] = loc_entries["continuum_intro_aged"]
 
 
 def _copy_cases(restored, loc_entries):
@@ -194,7 +187,7 @@ def _copy_cases(restored, loc_entries):
         loc_entries[old_key] = f"Old {pretty}"
         loc_key = f"continuum_intro_copy_{idx}"
         loc_entries[loc_key] = _welcome(
-            f"The {pretty} still hold their space. You rise as a new polity under the same banner — "
+            f"The {pretty} still holds its space. You rise as a new polity under the same banner - "
             "not their heir. You keep your name."
         )
         leader_locs = []
@@ -323,21 +316,6 @@ def emit_intro_event(restored, loc_entries, had_crisis=False):
     desc_copy_txt = ("\n".join(desc_copy) + "\n") if desc_copy else ""
     crisis_flag = "			set_global_flag = continuum_had_crisis\n" if had_crisis else ""
     aged_copy_txt = ""
-    if cases:
-        ands = []
-        for case in cases:
-            inner = "\n".join("				" + ln for ln in case["lines"])
-            ands.append("			AND = {\n" + inner + "\n			}")
-        aged_copy_txt = (
-            "	desc = {\n"
-            "		trigger = {\n"
-            "			OR = {\n"
-            + "\n".join(ands)
-            + "\n			}\n"
-            "		}\n"
-            "		text = continuum_intro_aged_copy\n"
-            "	}\n"
-        )
     return f"""namespace = continuum_intro
 country_event = {{
 	id = continuum_intro.1

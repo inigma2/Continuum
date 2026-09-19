@@ -895,13 +895,25 @@ CRISIS_COUNTRY_TYPES = (
 
 # 4.4: these keys exist but fail give_technology on gestalt/machine countries.
 GESTALT_SKIP_TECHS = frozenset({
-    "tech_interplanetary_commerce",
-    "tech_holo_entertainment",
-    "tech_critter_feeder",
+    "tech_interplanetary_commerce", "tech_holo_entertainment", "tech_critter_feeder",
+    "tech_genome_mapping", "tech_industrial_farming", "tech_hydroponics",
+    "tech_gene_tailoring", "tech_vitality_boosters", "tech_living_state",
+    "tech_collective_self", "tech_epigenetic_triggers", "tech_xeno_relations",
+    "tech_slave_colonies", "tech_penal_colonies", "tech_resort_colonies",
+    "tech_effective_bureaucracy", "tech_interstellar_economics", "tech_psionic_theory",
+    "tech_alien_cloning", "tech_improved_incubators", "tech_metabolic_gases",
+    "tech_controlled_mutations", "tech_controlled_mutations_2",
+    "tech_combat_computers_bio_integration", "tech_hyper_drive_bio_integration",
+    "tech_thrusters_bio_integration", "tech_sensors_bio_integration",
+    "tech_gravity_wells", "tech_quantum_catapult",
 })
 ALWAYS_SKIP_TECHS = frozenset({
     "tech_critter_feeder",
 })
+BIO_SHIP_TECH_MARKERS = (
+    "bioship", "bio_ship", "biological_ship", "gravity_snare", "growth_stage",
+    "maw", "weavers", "hatchery",
+)
 
 
 def detect_crisis(data):
@@ -1015,6 +1027,44 @@ def legal_successor_gov(emp, sp, rng, civic_keys=None, ethic_keys=None):
     return authority, civics, ethics
 
 
+_ETHIC_FLIP = {
+    "ethic_xenophobe": "ethic_xenophile",
+    "ethic_fanatic_xenophobe": "ethic_fanatic_xenophile",
+    "ethic_xenophile": "ethic_xenophobe",
+    "ethic_fanatic_xenophile": "ethic_fanatic_xenophobe",
+    "ethic_militarist": "ethic_pacifist",
+    "ethic_fanatic_militarist": "ethic_fanatic_pacifist",
+    "ethic_pacifist": "ethic_militarist",
+    "ethic_fanatic_pacifist": "ethic_fanatic_militarist",
+    "ethic_authoritarian": "ethic_egalitarian",
+    "ethic_fanatic_authoritarian": "ethic_fanatic_egalitarian",
+    "ethic_egalitarian": "ethic_authoritarian",
+    "ethic_fanatic_egalitarian": "ethic_fanatic_authoritarian",
+    "ethic_materialist": "ethic_spiritualist",
+    "ethic_fanatic_materialist": "ethic_fanatic_spiritualist",
+    "ethic_spiritualist": "ethic_materialist",
+    "ethic_fanatic_spiritualist": "ethic_fanatic_materialist",
+}
+
+
+def buffer_successor_gov(emp, sp, rng, civic_keys=None, ethic_keys=None):
+    """Fringe breakaways: inverted ethics so they rival the parent."""
+    if is_machine(emp, sp):
+        civics = ["civic_machine_warbots", "civic_machine_replication"]
+        if civic_keys:
+            civics = [c for c in civics if c in civic_keys] or ["civic_machine_builder", "civic_machine_replication"]
+        return "auth_machine_intelligence", civics[:2], ["ethic_gestalt_consciousness"]
+    if is_hive(emp, sp):
+        civics = ["civic_hive_strength", "civic_hive_one_mind"]
+        if civic_keys:
+            civics = [c for c in civics if c in civic_keys] or ["civic_hive_divided_attention", "civic_hive_one_mind"]
+        return "auth_hive_mind", civics[:2], ["ethic_gestalt_consciousness"]
+    flipped = emp.copy()
+    ethics = [_ETHIC_FLIP.get(e, e) for e in (emp.get("ethics") or [])]
+    flipped["ethics"] = ethics
+    return legal_successor_gov(flipped, sp, rng, civic_keys, ethic_keys)
+
+
 def clamp_default_starbases(starbases):
     """Default successors cannot use FE citadel designs or starhold without tech."""
     out = {}
@@ -1027,32 +1077,46 @@ def clamp_default_starbases(starbases):
     return out
 
 
-def unique_successor_name(sp_name, authority, used, rng, place=None):
-    """Species adjective + government noun, unique vs remnants and other successors."""
+def _place_label(place):
+    s = display_empire_name(place or "")
+    s = re.sub(r"\s+(Black Hole|Prime|A|B|C)$", "", s, flags=re.I).strip()
+    if continuum_cp._is_junk_label(s) or s in ("Empire", "Unknown", "Star", ""):
+        return ""
+    return s
+
+
+def unique_successor_name(sp_name, authority, used, rng, place=None, sibling_index=0):
+    """First sibling: species + gov noun. Later: landmark/system name + noun."""
     stem = display_empire_name(sp_name or "Star")
     if continuum_cp._is_junk_label(stem) or stem in ("Empire", "Unknown", "Star"):
         stem = "Star"
     nouns = list(_SUCCESSOR_NOUNS.get(authority) or ["Polity"])
     rng.shuffle(nouns)
+    loc = _place_label(place)
+    generics = ["Rim", "March", "Reach", "Veil", "Expanse", "Drift", "Watch", "Hold", "Cloister"]
+    if sibling_index == 0:
+        for noun in nouns:
+            nm = continuum_cp.apply_adjective(stem, noun)
+            if nm and not continuum_cp._is_junk_label(nm) and nm not in used:
+                used.add(nm)
+                return nm
+    label = loc or rng.choice(generics)
     for noun in nouns:
-        nm = continuum_cp.apply_adjective(stem, noun)
-        if nm and not continuum_cp._is_junk_label(nm) and nm not in used:
+        nm = f"{label} {noun}"
+        if nm not in used:
             used.add(nm)
             return nm
-    place = display_empire_name(place or "") if place else ""
-    if continuum_cp._is_junk_label(place) or place in ("Empire", "Unknown"):
-        place = "Frontier"
-    for noun in nouns:
-        nm = f"{continuum_cp.apply_adjective(stem, noun)} of {place}"
-        if nm not in used and not continuum_cp._is_junk_label(nm):
-            used.add(nm)
-            return nm
+    for g in generics:
+        for noun in nouns:
+            nm = f"{g} {noun}"
+            if nm not in used:
+                used.add(nm)
+                return nm
     i = 2
-    base = continuum_cp.apply_adjective(stem, nouns[0] if nouns else "Polity") or f"{stem} Polity"
-    nm = f"{base} of {place}"
+    nm = f"{label} {nouns[0] if nouns else 'Polity'}"
     while nm in used:
         i += 1
-        nm = f"{place} {nouns[0] if nouns else 'Polity'} {i}"
+        nm = f"{label} {nouns[0] if nouns else 'Polity'} {i}"
     used.add(nm)
     return nm
 
@@ -1411,11 +1475,27 @@ def _tech_effect_lines(emp, tech_keys, extra=None):
     skip = set(ALWAYS_SKIP_TECHS)
     if gestalt:
         skip |= GESTALT_SKIP_TECHS
+    auth = emp.get("authority") or ""
+    hive = auth == "auth_hive_mind"
+    machine = auth == "auth_machine_intelligence"
+    bio = "bio" in str(emp.get("origin") or "") or any("biological" in str(c) for c in (emp.get("civics") or []))
     lines = []
     for t in techs:
         if tech_keys and t not in tech_keys:
             continue
         if t in skip:
+            continue
+        tl = t.lower()
+        if not hive and ("hive" in tl or t.startswith("tech_hive")):
+            continue
+        if not machine and ("tech_machine" in tl or tl.startswith("tech_robomodding")):
+            continue
+        if not bio and any(m in tl for m in BIO_SHIP_TECH_MARKERS):
+            continue
+        if (machine or hive) and (
+            "bio_integration" in tl or "genome" in tl or "gene_" in tl
+            or "holo_entertainment" in tl or "interplanetary_commerce" in tl
+        ):
             continue
         lines.append(f"					give_technology = {{ tech = {t} message = no }}")
     lines.append("					refresh_auto_generated_ship_designs = yes")
@@ -1951,7 +2031,8 @@ event = {
             "pop_txt": _pop_blocks(emp, "continuum_emp", idx, f"continuum_emp_{idx}", f"continuum_sp_{idx}"),
             "sb_txt": _starbase_blocks("continuum_emp", idx, f"continuum_emp_{idx}", emp),
         })
-        chunks.append(f"""			create_species = {{
+        extinct = set(plan.get("aged_extinct_ids") or [])
+        rem_chunk = f"""			create_species = {{
 				name = {sp_name}
 				class = {sp.get('class', 'MAM')}
 				portrait = {sp.get('portrait', 'human')}
@@ -1988,7 +2069,16 @@ event = {
 					add_resource = {{ energy = 1000 minerals = 1000 food = 1000 alloys = 500 influence = 200 }}
 				}}
 			}}
-""")
+"""
+        if cid in extinct:
+            inner = "\n".join(("\t" + ln) if ln.strip() else ln for ln in rem_chunk.splitlines())
+            rem_chunk = (
+                "			if = {\n"
+                "				limit = { NOT = { has_global_flag = continuum_aged } }\n"
+                + inner
+                + "\n			}\n"
+            )
+        chunks.append(rem_chunk)
 
     _spl_rng = random.Random(int(getattr(__import__("continuum_aged"), "AGED_YEARS", 10000)) + 19)
     _FLAG_COLORS = [
@@ -1996,8 +2086,22 @@ event = {
         "turquoise", "purple", "pink", "brown", "yellow", "green", "dark_purple",
         "dark_blue", "dark_green", "grey", "beige",
     ]
-    _FLAG_BG = ["00_solid.dds", "new_dawn.dds", "circle.dds", "stripes.dds", "v.dds", "inverted_v.dds", "horizontal.dds", "flag_BG_1.dds", "flag_BG_5.dds"]
+    _FLAG_BG = [
+        "00_solid.dds", "new_dawn.dds", "circle.dds", "stripes.dds", "v.dds",
+        "inverted_v.dds", "horizontal.dds", "flag_BG_1.dds", "flag_BG_5.dds",
+        "diagonal.dds", "sinus.dds", "triangle_split.dds", "vertical.dds",
+    ]
+    _FLAG_ICONS = [
+        ("spherical", "flag_spherical_1.dds"), ("spherical", "flag_spherical_7.dds"),
+        ("pointy", "flag_pointy_1.dds"), ("pointy", "flag_pointy_8.dds"),
+        ("blocky", "flag_blocky_1.dds"), ("blocky", "flag_blocky_9.dds"),
+        ("ornate", "flag_ornate_2.dds"), ("pirate", "flag_pirate_4.dds"),
+        ("human", "flag_human_3.dds"), ("domination", "domination_5.dds"),
+        ("corporate", "corporate_03.dds"), ("imperial", "imperial_04.dds"),
+        ("zoological", "flag_zoological_4.dds"), ("special", "pirate_flag.dds"),
+    ]
     used_names = set()
+    parent_sib = {}
     for emp0 in empires:
         nm = display_empire_name(emp0.get("name") or "")
         if nm:
@@ -2006,9 +2110,20 @@ event = {
         sp = species.get(str(emp.get("founder_species"))) or {}
         sp_raw = species_display_name(sp, emp)
         sp_name = script_name(sp_raw)
-        authority, civics, ethics = legal_successor_gov(emp, sp, _spl_rng, civic_keys, ethic_keys)
+        if emp.get("_buffer"):
+            authority, civics, ethics = buffer_successor_gov(emp, sp, _spl_rng, civic_keys, ethic_keys)
+        else:
+            authority, civics, ethics = legal_successor_gov(emp, sp, _spl_rng, civic_keys, ethic_keys)
+        pid = emp.get("_parent_id")
+        sib = parent_sib.get(pid, 0)
+        parent_sib[pid] = sib + 1
+        place = emp.get("_home")
+        if not place:
+            cnames = emp.get("colony_names") or {}
+            if cnames:
+                place = next(iter(cnames.values()))
         country_name = unique_successor_name(
-            sp_raw, authority, used_names, _spl_rng, place=emp.get("_home")
+            sp_raw, authority, used_names, _spl_rng, place=place, sibling_index=sib
         )
         emp["name"] = country_name
         is_void = bool(emp.get("_void")) and authority not in ("auth_hive_mind", "auth_machine_intelligence")
@@ -2031,8 +2146,13 @@ event = {
             colors.append("null")
         keep = colors[0]
         others = [c for c in _FLAG_COLORS if c != keep]
-        colors[1] = _spl_rng.choice(others)
-        colors[2] = _spl_rng.choice([c for c in others if c != colors[1]] or others)
+        if sib == 0:
+            colors[1] = _spl_rng.choice(others)
+            colors[2] = _spl_rng.choice([c for c in others if c != colors[1]] or others)
+        else:
+            colors[0] = _spl_rng.choice(_FLAG_COLORS)
+            colors[1] = _spl_rng.choice([c for c in _FLAG_COLORS if c != colors[0]])
+            colors[2] = _spl_rng.choice([c for c in _FLAG_COLORS if c not in (colors[0], colors[1])] or others)
         gfx = emp.get("graphical_culture") or "mammalian_01"
         emp["starbases"] = clamp_default_starbases(emp.get("starbases") or {})
         tech_extra = []
@@ -2046,6 +2166,8 @@ event = {
         sb_tech += "\n						refresh_auto_generated_ship_designs = yes"
         icon_cat = emp.get("flag_icon_cat") or "special"
         icon_file = emp.get("flag_icon") or "pirate_flag.dds"
+        if sib >= 1:
+            icon_cat, icon_file = _spl_rng.choice(_FLAG_ICONS)
         bg_file = _spl_rng.choice(_FLAG_BG)
         restored.append({
             "emp": emp,
@@ -2274,11 +2396,14 @@ event = {
         if len(civics) < 2:
             civics = ["civic_secret_of_fire", "civic_the_wheel"]
         prim_auth = prim.get("authority") or "auth_oligarchic"
-        if is_hive(prim, sp) or is_machine(prim, sp) or "ethic_gestalt_consciousness" in ethics:
-            ethics = ["ethic_xenophile", "ethic_fanatic_egalitarian"]
-            prim_auth = "auth_oligarchic"
-            if len(civics) < 2 or any("hive" in c or "machine" in c for c in civics):
-                civics = ["civic_secret_of_fire", "civic_the_wheel"]
+        if is_hive(prim, sp):
+            prim_auth = "auth_hive_mind"
+            ethics = ["ethic_gestalt_consciousness"]
+            civics = ["civic_hive_divided_attention", "civic_hive_one_mind"]
+        elif is_machine(prim, sp):
+            prim_auth = "auth_machine_intelligence"
+            ethics = ["ethic_gestalt_consciousness"]
+            civics = ["civic_machine_builder", "civic_machine_replication"]
         gfx = prim.get("graphical_culture") or "preindustrial_01"
         age = prim.get("pre_ftl_age")
         if not age:
@@ -2392,6 +2517,62 @@ event = {
 					species = owner_main_species
 					size = {int(next(iter((prim.get("colony_pop") or {}).values()), 1400))}
 				}}{prim_rename}{army_txt}
+				}}
+			}}
+""")
+
+    for nidx, np in enumerate(plan.get("aged_new_prims") or []):
+        cls = np.get("class") or "MAM"
+        age = np.get("age") or "iron_age"
+        nlist = np.get("namelist") or "MAM1"
+        pc = np.get("planet_class") or "pc_continental"
+        chunks.append(f"""			if = {{
+				limit = {{ has_global_flag = continuum_aged }}
+				every_system = {{
+					limit = {{ has_star_flag = continuum_newprim_{nidx} }}
+					every_system_planet = {{
+						limit = {{
+							has_planet_flag = continuum_newprim_{nidx}_homeworld
+							is_colony = no
+							NOT = {{ exists = owner }}
+						}}
+						create_species = {{
+							name = random
+							class = {cls}
+							portrait = random
+							namelist = {nlist}
+							homeworld = this
+							traits = {{
+								ideal_planet_class = {pc}
+								trait = trait_adaptive
+							}}
+						}}
+						create_country = {{
+							name = random
+							type = primitive
+							authority = auth_oligarchic
+							civics = {{ civic = civic_secret_of_fire civic = civic_the_wheel }}
+							origin = origin_default_pre_ftl
+							species = last_created_species
+							ethos = {{ ethic = ethic_xenophile ethic = ethic_pacifist }}
+							day_zero_contact = no
+							ignore_initial_colony_error = yes
+							effect = {{
+								set_country_flag = {age}
+								set_pre_ftl_age = {age}
+								set_country_flag = continuum_aged_new_primitive
+								save_global_event_target_as = continuum_newprim_{nidx}
+							}}
+						}}
+						create_colony = {{
+							owner = last_created_country
+							species = last_created_species
+						}}
+						create_pop_group = {{
+							species = owner_main_species
+							size = 1200
+						}}
+					}}
 				}}
 			}}
 """)
