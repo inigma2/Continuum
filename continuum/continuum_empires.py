@@ -272,14 +272,37 @@ def _name_from_block(body):
 def display_empire_name(name):
     """Readable country name. Loc-resolved; never leaves EMPIRE_DESIGN / SPEC_ / AofB debris."""
     s = (name or "Empire").strip()
-    if not s:
+    if continuum_cp._is_junk_label(s):
         return "Empire"
+    if s.upper().startswith("EMPIRE DESIGN"):
+        rest = s[13:].strip(" :_-")
+        return rest[:1].upper() + rest[1:] if rest else "Empire"
     if " " in s or s == continuum_cp.display_key(s):
-        if s.upper().startswith("EMPIRE DESIGN"):
-            rest = s[13:].strip(" :_-")
-            return rest[:1].upper() + rest[1:] if rest else "Empire"
         return s
-    return continuum_cp.display_key(s) or s
+    out = continuum_cp.display_key(s) or s
+    return "Empire" if continuum_cp._is_junk_label(out) else out
+
+
+def species_display_name(sp, emp=None):
+    """Species label for create_species / successor titles. Never $affix$ or class codes."""
+    sp = sp or {}
+    s = display_empire_name(sp.get("name") or "")
+    cls = str(sp.get("class") or "").upper()
+    bad = (
+        continuum_cp._is_junk_label(s)
+        or s in ("Empire", "Unknown", "")
+        or s.upper() == cls
+        or len(s) <= 3
+    )
+    if bad:
+        parent = display_empire_name((emp or {}).get("name") or "")
+        if parent and parent not in ("Empire", "Unknown"):
+            tok = parent.split()[0]
+            if tok.lower() not in ("the", "united", "mandate", "concordat", "empire"):
+                return tok
+            return parent
+        return (cls or "STAR").title() if cls else "Star"
+    return s
 
 
 def script_name(name):
@@ -910,13 +933,21 @@ def is_hive(emp, sp):
 
 # Successor government nouns. Not Concord/Compact/Awakening — those were system-name titles.
 _SUCCESSOR_NOUNS = {
-    "auth_democratic": ["Republic", "Union", "Commonwealth", "Assembly", "Coalition", "League"],
-    "auth_oligarchic": ["Directorate", "Polity", "Authority", "Synod", "Seat", "Combine"],
-    "auth_dictatorial": ["Regime", "Order", "Hegemony", "Autocracy", "Command"],
-    "auth_imperial": ["Empire", "Imperium", "Realm", "Dominion", "Dynasty"],
-    "auth_hive_mind": ["Hive", "Swarm", "Collective", "Chorus", "Brood", "Confluence"],
-    "auth_machine_intelligence": ["Consciousness", "Core", "Consensus", "Network", "Array", "Conclave"],
-    "auth_corporate": ["Corporation", "Syndicate", "Conglomerate", "Consortium", "Combine"],
+    "auth_democratic": [
+        "Republic", "Union", "Commonwealth", "Assembly", "Coalition", "League",
+        "Federation", "Alliance", "Senate", "Congress",
+    ],
+    "auth_oligarchic": [
+        "Directorate", "Polity", "Authority", "Synod", "Seat", "Combine",
+        "Consortium", "Board", "Council",
+    ],
+    "auth_dictatorial": ["Regime", "Order", "Hegemony", "Autocracy", "Command", "Junta"],
+    "auth_imperial": ["Empire", "Imperium", "Realm", "Dominion", "Dynasty", "Throne"],
+    "auth_hive_mind": ["Hive", "Swarm", "Collective", "Chorus", "Brood", "Confluence", "Mind"],
+    "auth_machine_intelligence": [
+        "Consciousness", "Core", "Consensus", "Network", "Array", "Conclave", "Mainframe",
+    ],
+    "auth_corporate": ["Corporation", "Syndicate", "Conglomerate", "Consortium", "Combine", "Holdings"],
 }
 _PREF_TRAITS = (
     "trait_pc_continental_preference", "trait_pc_ocean_preference", "trait_pc_tropical_preference",
@@ -996,22 +1027,32 @@ def clamp_default_starbases(starbases):
     return out
 
 
-def unique_successor_name(sp_name, authority, used, rng):
+def unique_successor_name(sp_name, authority, used, rng, place=None):
     """Species adjective + government noun, unique vs remnants and other successors."""
     stem = display_empire_name(sp_name or "Star")
+    if continuum_cp._is_junk_label(stem) or stem in ("Empire", "Unknown", "Star"):
+        stem = "Star"
     nouns = list(_SUCCESSOR_NOUNS.get(authority) or ["Polity"])
     rng.shuffle(nouns)
     for noun in nouns:
         nm = continuum_cp.apply_adjective(stem, noun)
-        if nm and nm not in used:
+        if nm and not continuum_cp._is_junk_label(nm) and nm not in used:
             used.add(nm)
             return nm
-    base = continuum_cp.apply_adjective(stem, nouns[0] if nouns else "Polity") or f"{stem} Polity"
+    place = display_empire_name(place or "") if place else ""
+    if continuum_cp._is_junk_label(place) or place in ("Empire", "Unknown"):
+        place = "Frontier"
+    for noun in nouns:
+        nm = f"{continuum_cp.apply_adjective(stem, noun)} of {place}"
+        if nm not in used and not continuum_cp._is_junk_label(nm):
+            used.add(nm)
+            return nm
     i = 2
-    nm = f"{base} {i}"
+    base = continuum_cp.apply_adjective(stem, nouns[0] if nouns else "Polity") or f"{stem} Polity"
+    nm = f"{base} of {place}"
     while nm in used:
         i += 1
-        nm = f"{base} {i}"
+        nm = f"{place} {nouns[0] if nouns else 'Polity'} {i}"
     used.add(nm)
     return nm
 
@@ -1019,7 +1060,7 @@ def unique_successor_name(sp_name, authority, used, rng):
 def _void_trait_lines(traits, trait_keys=None):
     kept = []
     for t in traits or []:
-        if t in _PREF_TRAITS or t == "trait_pc_habitat_preference":
+        if t in _PREF_TRAITS or t in ("trait_pc_habitat_preference", "trait_nomadic"):
             continue
         if trait_keys and t not in trait_keys:
             continue
@@ -1860,8 +1901,8 @@ event = {
         sp = species.get(str(emp.get("founder_species"))) or {}
         flag = f"continuum_emp_{idx}"
         cap_flag = f"continuum_emp_{idx}_capital"
-        name = script_name(emp.get("name") or "Unknown")
-        sp_name = script_name(sp.get("name") or "Unknown")
+        name = script_name(display_empire_name(emp.get("name") or "Unknown"))
+        sp_name = script_name(species_display_name(sp, emp))
         if is_machine(emp, sp):
             authority = "auth_machine_intelligence"
             civics = ["civic_machine_builder", "civic_machine_replication"]
@@ -1963,11 +2004,16 @@ event = {
             used_names.add(nm)
     for sidx, emp in enumerate(plan.get("aged_splinters") or []):
         sp = species.get(str(emp.get("founder_species"))) or {}
-        sp_name = script_name(sp.get("name") or "Unknown")
+        sp_raw = species_display_name(sp, emp)
+        sp_name = script_name(sp_raw)
         authority, civics, ethics = legal_successor_gov(emp, sp, _spl_rng, civic_keys, ethic_keys)
-        country_name = unique_successor_name(sp.get("name") or "Star", authority, used_names, _spl_rng)
+        country_name = unique_successor_name(
+            sp_raw, authority, used_names, _spl_rng, place=emp.get("_home")
+        )
         emp["name"] = country_name
         is_void = bool(emp.get("_void")) and authority not in ("auth_hive_mind", "auth_machine_intelligence")
+        if is_void and "trait_nomadic" in (sp.get("traits") or []):
+            is_void = False
         origin = "origin_void_dwellers" if is_void else "origin_default"
         traits = [t for t in (sp.get("traits") or []) if not trait_keys or t in trait_keys]
         if is_void:
@@ -2078,7 +2124,7 @@ event = {
         name = script_name(emp.get("name") or "Unknown")
         fe_loc = f"continuum_fe_name_{idx}"
         loc_entries[fe_loc] = display_empire_name(emp.get("name") or "Unknown")
-        sp_name = script_name(sp.get("name") or "Unknown")
+        sp_name = script_name(species_display_name(sp, emp))
         ethics = [e for e in (emp.get("ethics") or []) if e.startswith("ethic_")]
         if ethic_keys:
             ethics = [e for e in ethics if e in ethic_keys]
@@ -2160,7 +2206,7 @@ event = {
         name = script_name(mar.get("name") or "Unknown")
         mar_loc = f"continuum_mar_name_{idx}"
         loc_entries[mar_loc] = display_empire_name(mar.get("name") or "Unknown")
-        sp_name = script_name(sp.get("name") or "Unknown")
+        sp_name = script_name(species_display_name(sp, mar))
         n = mar.get("marauder_n") or str(idx + 1)
         traits = [t for t in (sp.get("traits") or []) if not trait_keys or t in trait_keys][:8]
         trait_lines = "\n".join(f"\t\t\t\ttrait = {t}" for t in traits) or "\t\t\t\ttrait = trait_rapid_breeders"
@@ -2217,8 +2263,8 @@ event = {
 
     for idx, prim in enumerate(plan.get("primitives") or []):
         sp = species.get(str(prim.get("founder_species"))) or {}
-        name = script_name(prim.get("name") or "Unknown")
-        sp_name = script_name(sp.get("name") or "Unknown")
+        name = script_name(display_empire_name(prim.get("name") or "Unknown"))
+        sp_name = script_name(species_display_name(sp, prim))
         ethics = [e for e in (prim.get("ethics") or []) if e.startswith("ethic_")]
         if ethic_keys:
             ethics = [e for e in ethics if e in ethic_keys]
@@ -2227,6 +2273,12 @@ event = {
         civics = [c for c in (prim.get("civics") or []) if c.startswith("civic_")]
         if len(civics) < 2:
             civics = ["civic_secret_of_fire", "civic_the_wheel"]
+        prim_auth = prim.get("authority") or "auth_oligarchic"
+        if is_hive(prim, sp) or is_machine(prim, sp) or "ethic_gestalt_consciousness" in ethics:
+            ethics = ["ethic_xenophile", "ethic_fanatic_egalitarian"]
+            prim_auth = "auth_oligarchic"
+            if len(civics) < 2 or any("hive" in c or "machine" in c for c in civics):
+                civics = ["civic_secret_of_fire", "civic_the_wheel"]
         gfx = prim.get("graphical_culture") or "preindustrial_01"
         age = prim.get("pre_ftl_age")
         if not age:
@@ -2311,7 +2363,7 @@ event = {
 					create_country = {{
 						name = {name}
 						type = primitive
-						authority = {prim.get('authority') or 'auth_oligarchic'}
+						authority = {prim_auth}
 						civics = {{ civic = {civics[0]} civic = {civics[1]} }}
 						origin = {origin}
 						species = last_created_species
@@ -2609,6 +2661,10 @@ def build_empire_plan(save_path, galaxy_data, stars, planets, argv_start=None):
             enclave_names["salvager"] = c.get("name")
     apply_home_prime(galaxy_data, defaults, capitals)
     spawn_ids = set(spawn_weights.keys())
+    sole = {str(syss[0]) for syss in owned.values() if len(syss) == 1}
+    if sole:
+        spawn_ids -= sole
+        spawn_weights = {k: v for k, v in spawn_weights.items() if str(k) not in sole}
     fallback = next(iter(spawn_ids), str(galaxy_data[0].get("id")) if galaxy_data else "0")
     return {
         "kind": "auto",

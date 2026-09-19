@@ -813,9 +813,12 @@ def sever_empires(plan, aged_galaxy):
                 chosen.append(comp)
             else:
                 fallow.update(comp)
+        import continuum_empires as ce
+        sp = (plan.get("species") or {}).get(str(emp.get("founder_species"))) or {}
         for comp in multi + chosen:
             hab_only = _habitat_only(comp, emp, p2s, habitats, pclass)
-            if hab_only and rng.random() < 0.5:
+            can_void = hab_only and not ce.is_machine(emp, sp) and "trait_nomadic" not in (sp.get("traits") or [])
+            if hab_only and (not can_void or rng.random() < 0.5):
                 fallow.update(comp)
                 keep_fallow.update(comp)
                 continue
@@ -823,7 +826,8 @@ def sever_empires(plan, aged_galaxy):
             spl["origin"] = "origin_default"
             spl["_parent_idx"] = idx
             spl["_parent_id"] = cid
-            if hab_only:
+            spl["_home"] = names_by_sys.get(str(comp[0]), "")
+            if hab_only and can_void:
                 spl["_void"] = True
                 spl["origin"] = "origin_void_dwellers"
             splinters.append(spl)
@@ -855,6 +859,7 @@ def sever_empires(plan, aged_galaxy):
             spl["type"] = "default"
             spl["_parent_idx"] = idx
             spl["_from_fe"] = True
+            spl["_home"] = names_by_sys.get(str(pick[0]), "")
             import continuum_empires as ce
             spl["starbases"] = ce.clamp_default_starbases(spl.get("starbases") or {})
             fe_ftl.append(spl)
@@ -900,7 +905,14 @@ def sever_empires(plan, aged_galaxy):
         splinters = keep_spl
 
     prims = list(plan.get("primitives") or [])
-    prim_ftl = [i for i, _p in enumerate(prims) if rng.random() < 0.75]
+    prim_ftl = []
+    import continuum_empires as ce
+    for i, p in enumerate(prims):
+        sp = (plan.get("species") or {}).get(str(p.get("founder_species"))) or {}
+        if ce.is_hive(p, sp) or ce.is_machine(p, sp):
+            prim_ftl.append(i)
+        elif rng.random() < 0.75:
+            prim_ftl.append(i)
 
     return {
         "remnant": remnant,

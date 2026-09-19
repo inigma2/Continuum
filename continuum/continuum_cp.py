@@ -96,6 +96,7 @@ def display_key(key):
         s,
     )
     s = re.sub(r"_(planet|system|star|moon)$", "", s, flags=re.I)
+    s = re.sub(r"_Name$", "", s)
     return s.replace("_", " ").strip() or str(key)
 
 
@@ -128,34 +129,97 @@ def apply_adjective(noun, rest):
     return re.sub(r"\s+", " ", out).strip()
 
 
+def _is_junk_label(s):
+    if not s:
+        return True
+    t = str(s)
+    if "$" in t or t.startswith("%"):
+        return True
+    low = t.lower()
+    if "affix" in low and "base" in low:
+        return True
+    if low in ("adjective", "unknown", "aofb", "fmt", "format"):
+        return True
+    return False
+
+
+def _resolve_name_key(k):
+    """Species loc over planet loc; never return $affix$ templates."""
+    k = str(k or "")
+    if not k or k in FORMAT_SKIP_KEYS or k in FORMAT_TOP or k.startswith("%"):
+        return ""
+    base = re.sub(r"_(planet|system|star|moon)$", "", k, flags=re.I)
+    if base != k:
+        looked = loc_lookup(base)
+        if looked and not _is_junk_label(looked):
+            return looked
+    looked = loc_lookup(k)
+    if looked and not _is_junk_label(looked):
+        return looked
+    s = display_key(base if base != k else k)
+    s = re.sub(r"\s+Name$", "", s).strip()
+    if _is_junk_label(s):
+        return ""
+    if k.startswith("SPEC_") and s == s.lower():
+        s = s.replace("-", " ").title().replace(" ", "-") if "-" in k else s.title()
+    return s
+
+
 def name_from_keys(keys):
     """Compose a display name from a Clausewitz name-block key list."""
     if not keys:
         return "Unknown"
     top = keys[0]
     template = _LOC.get(top, "") if top else ""
-    is_format = top in FORMAT_TOP or ("$" in template)
-    if is_format:
-        parts = []
-        for k in keys[1:]:
-            if k in FORMAT_SKIP_KEYS:
-                continue
-            p = display_key(k)
-            if p and p not in parts:
-                parts.append(p)
-        if top in ("%ADJECTIVE%", "%ADJ%") and parts:
-            return apply_adjective(parts[0], " ".join(parts[1:]))
-        if "$1$" in template:
-            out = template
-            for i, p in enumerate(parts, 1):
-                out = out.replace(f"${i}$", p)
-            out = re.sub(r"\$\d+\$", "", out).strip()
-            if out:
-                return out
-        if top == "AofB" and len(parts) >= 2:
-            return f"{parts[0]} of {parts[1]}"
-        return " ".join(parts) if parts else display_key(top)
-    return display_key(top)
+    is_format = top in FORMAT_TOP or ("$" in (template or ""))
+    if not is_format:
+        out = _resolve_name_key(top) or display_key(top)
+        return "Unknown" if _is_junk_label(out) else out
+    content = []
+    spec = ""
+    for k in keys[1:] if top in FORMAT_TOP else keys:
+        if k in FORMAT_SKIP_KEYS or k in FORMAT_TOP or str(k).startswith("%"):
+            continue
+        p = _resolve_name_key(k)
+        if not p:
+            continue
+        if str(k).startswith("SPEC_") or str(k).startswith("NAME_"):
+            spec = spec or p
+        if p not in content:
+            content.append(p)
+    if not content:
+        out = _resolve_name_key(top) or display_key(top)
+        return "Unknown" if _is_junk_label(out) else out
+    if top in ("AofB", "AofBpfx") and len(content) >= 2:
+        # Concordat of Dima'Xanian — species, not homeworld loc (Xania).
+        return f"{content[0]} of {content[1]}"
+    if "$1$" in (template or "") and "$affix$" not in template:
+        out = template
+        for i, p in enumerate(content, 1):
+            out = out.replace(f"${i}$", p)
+        out = re.sub(r"\$\d+\$", "", out).strip()
+        if out and not _is_junk_label(out):
+            return out
+    has_wrap = top == "%ADJ%" or "%ADJ%" in keys
+    has_spec = top == "%ADJECTIVE%" or "%ADJECTIVE%" in keys
+    if has_wrap and has_spec and spec:
+        prefix = [p for p in content if p != spec]
+        if prefix and prefix[-1] and prefix[-1][0].isupper() and prefix[-1] not in spec:
+            noun = prefix[-1] if prefix[-1] != prefix[0] else ""
+            head = prefix[0]
+            rest = " ".join(x for x in ([spec, noun] if noun and noun != spec else [spec]) if x)
+            # United + Mirovandia + State → United Mirovandian State
+            adj = apply_adjective(spec, noun) if noun else spec
+            if head.lower() != spec.lower():
+                return f"{head} {adj}".strip() if noun else f"{head} {spec}".strip()
+        return apply_adjective(spec, " ".join(p for p in content if p != spec))
+    if top in ("%ADJECTIVE%", "%ADJ%") and content:
+        if spec:
+            rest = " ".join(p for p in content if p != spec)
+            return apply_adjective(spec, rest) if rest else spec
+        return apply_adjective(content[0], " ".join(content[1:]))
+    joined = " ".join(content)
+    return "Unknown" if _is_junk_label(joined) else joined
 
 
 def _brace_section(data, key):
