@@ -4,15 +4,23 @@ A Stellaris galaxy converter — one galaxy to rule them all.
 
 Turn a finished (or mid-game) save into a playable **static galaxy** for a new game. The Python parser reads your `.sav` and writes the imported galaxy into the Continuum mod folder.
 
-- **Current:** 0.8.4 for Stellaris **4.4.*** (Pegasus) — **Continuum Present** and **Continuum Aged**
+- **Current:** 0.8.5 for Stellaris **4.5.*** (Cygnus) — **Continuum Present** and **Continuum Aged**
 - Workshop: https://steamcommunity.com/sharedfiles/filedetails/?id=3554276594
 - Roadmap: https://steamcommunity.com/workshop/filedetails/discussion/3554276594/596284386694022138/
+
+## 0.8.5
+
+Stellaris **4.5.*** (Cygnus). One parse, two Galaxy Sizes. Date stays 2200. You are a new polity.
+
+**Aged Fallen:** the largest living remnant becomes a real Fallen Empire (tiny 3–5 system Gaia core, FE civics/tech/citadel). A second Fallen only if there were many Pre empires and the runner-up is still huge. Surplus land is fallow or absorbed by neighbors. Unclaimed megastructures in empty space ruin or vanish (nobody is maintaining them). L-gates stay. Sealed clusters (L-cluster, The Chosen, Formless **azilash**) stay off the hyperlane grid. Vanilla does not spawn a second Chosen cluster if yours is already there.
+
+**4.5:** country ethics and pop-group ethos restore correctly. Machine remnants use the MACHINE archetype. Clockwise differential drift and keep/preserve/extinct weeding are unchanged from 0.8.4. Leftover primitives that reach FTL get successor names (Directorate, Senate, …), not “Civilization”.
+
+Archaeology / graves, Merged stars, and an age slider are **not** in 0.8.5 (graves target 0.8.6).
 
 ## 0.8.4
 
 Aged weeding: keep / preserve / extinct by ranked thirds (50/50 pops:systems). Fallow **24–34%**. No country over **20%** of the galaxy. Large cores over **10%** get 1–5 fringe breakaways (system names, inverted ethics). Civil wars split some keep empires. Clockwise drift. Hyperlanes at Pre density (old short links kept). Unclaimed hyper relays spawn ruined. Pre primitives FTL by **age** (stone stays more often; early space usually flies); leftover pre-FTLs remain; **new** pre-FTLs appear on fallow habitables.
-
-Fallen conversion, archaeology, Merged, and an age slider are **not** in 0.8.4.
 
 ## 0.8.3
 
@@ -26,7 +34,7 @@ Copy-match in Present is still **Old {name}**.
 
 ## How to use
 
-1. Install Python 3 and Stellaris 4.4.x.
+1. Install Python 3 and Stellaris 4.5.x (Cygnus). 4.5 cannot load 4.4 saves in-game; re-save in 4.5 first.
 2. Open the old save in current Stellaris and save a **local** copy (not cloud).
 3. Enable Continuum. Put this `continuum/` folder in your Stellaris `mod` directory (Workshop subscribers already have it).
 4. From that folder: `python continuum_parser.py`
@@ -34,7 +42,7 @@ Copy-match in Present is still **Old {name}**.
 6. New Game → pick an empire → **Galaxy Size: Continuum Present** or **Continuum Aged** (any galaxy shape).
 7. Turn extra wormholes / gateways / hyperlanes **off** if you want a near-exact import. Console `play 0` then `observe` to inspect before a real run.
 
-`supported_version` is `v4.4.*`. Values like `v4.*` are rejected by 4.4 and can hide the mod.
+`supported_version` is `v4.5.*`. Values like `v4.*` are rejected by Stellaris and can hide the mod.
 
 ## Repo vs play folder
 

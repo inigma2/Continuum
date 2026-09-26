@@ -1,6 +1,6 @@
 # Continuum
 
-Stellaris 4.4.* save → static galaxy. GitHub is **source**. Play/upload folder is Documents `mod\continuum`.
+Stellaris 4.5.* (Cygnus) save → static galaxy. GitHub is **source**. Play/upload folder is Documents `mod\continuum`. 4.4 saves still parse; 4.5 cannot load them in-game.
 
 ## Do not regress
 

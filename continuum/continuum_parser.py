@@ -15,8 +15,8 @@ if sys.platform == "win32":
     import winreg
 
 # --- CONFIGURATION ---
-SUPPORTED_STELLARIS_VERSION = "4.4"
-MOD_VERSION = "0.8.4"
+SUPPORTED_STELLARIS_VERSION = "4.5"
+MOD_VERSION = "0.8.5"
 VANILLA_GALAXY_SHAPES = (
     "elliptical",
     "spiral_2",
@@ -760,7 +760,7 @@ def parse_stellaris_save(path):
 # --- FILE WRITING FUNCTIONS ---
 
 def write_mod_descriptor_files(mod_dir, user_dir):
-    """Stellaris 4.4 rejects supported_version values like v4.* — it wants v4.4.*."""
+    """Stellaris rejects supported_version values like v4.* — it wants v4.5.*."""
     descriptor_body = (
         f'version="{MOD_VERSION}"\n'
         'tags={\n'
@@ -875,25 +875,53 @@ def write_map_file(systems_list, nebulas_list, wormhole_pairs, output_path, loc_
         f.write('}\n')
 
 
-_RUIN_MEGA = {
-    "hyper_relay": "hyper_relay_ruined",
-    "gateway_0": "gateway_ruined",
-    "gateway_final": "gateway_ruined",
-    "gateway_restored": "gateway_ruined",
-}
+# Living FTL owners on Aged. Exact emp_N / spl_N only — not _capital/_outpost
+# leftovers from extinct remnants. Pre-FTL (prim/newprim) do not maintain megas.
+_OWNED_STAR_FLAG = re.compile(
+    r"^continuum_(emp|spl|fe|agefe|mar)_\d+$"
+)
 
 
-def _ruin_unclaimed_mega(mega_type, sys_id, extra_star_flags):
-    """Aged fallow/unclaimed: relays and gateways spawn ruined until repaired."""
+def _aged_unclaimed_system(sys_id, extra_star_flags):
+    """True when this Aged system has no remnant/splinter/FE/prim/marauder flag."""
+    fls = [str(f) for f in ((extra_star_flags or {}).get(str(sys_id)) or [])]
+    if any(_OWNED_STAR_FLAG.match(f) for f in fls):
+        return False
+    return "continuum_aged" in fls or "continuum_aged_fallow" in fls
+
+
+def _mega_ruin_target(mega_type, mega_keys):
+    """Vanilla ruined/destroyed stand-in, or None to omit (no derelict type)."""
     t = mega_type or ""
-    fls = (extra_star_flags or {}).get(str(sys_id)) or []
-    owned = any(re.fullmatch(r"continuum_(emp|spl|fe|prim)_\d+", str(f)) for f in fls)
-    if owned:
+    if not t:
+        return None
+    if t.startswith("lgate"):
         return t
-    aged = "continuum_aged" in fls or "continuum_aged_fallow" in fls
-    if not aged:
+    if "ruin" in t or t.endswith("_destroyed"):
         return t
-    return _RUIN_MEGA.get(t, t)
+    keys = mega_keys or set()
+    if t.startswith("gateway") and "gateway_ruined" in keys:
+        return "gateway_ruined"
+    base = re.sub(r"_\d+$", "", t)
+    for cand in (t + "_ruined", base + "_ruined", t + "_destroyed", base + "_destroyed"):
+        if cand in keys and "permanently" not in cand:
+            return cand
+    return None
+
+
+def _mega_upkeep_token(s):
+    t = str(s).lower()
+    return "arc_furnace" in t or "dyson_swarm" in t
+
+
+def _ruin_unclaimed_mega(mega_type, sys_id, extra_star_flags, mega_keys=None):
+    """Aged unclaimed: ruined type if vanilla has one, else None to skip spawn."""
+    t = mega_type or ""
+    if not _aged_unclaimed_system(sys_id, extra_star_flags):
+        return t
+    if t.startswith("lgate"):
+        return t
+    return _mega_ruin_target(t, mega_keys)
 
 
 def write_initializer_file(systems_list, parsed_megastructures, start_system_id, output_path, all_mega_definitions, shroud_data, deposit_keys=None, modifier_keys=None, spawn_ids=None, extra_star_flags=None, devastation_system=None, extra_planet_flags=None, init_prefix="continuum_system_init"):
@@ -931,26 +959,35 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
             init_effects.append(f'{tabs}\tclear_planet_modifiers = yes')
             if 'attached_mega' in body:
                 mega = body['attached_mega']
-                mega_type = mega.get("type")
-                mega_gfx = mega.get("graphical_culture", "none")
-                flag_name = f"continuum_host_{mega_type}_{mega_gfx}"
-                init_effects.append(f'{tabs}\tset_planet_flag = {flag_name}')
-                if 'name' in mega:
-                    clean_name = mega["name"].replace('"', '\\"')
-                    init_effects.append(f'{tabs}\tset_variable = {{ which = continuum_mega_name value = "{clean_name}" }}')
+                mega_type = _ruin_unclaimed_mega(
+                    mega.get("type"), sys_id, extra_star_flags,
+                    mega_keys=set(all_mega_definitions or ()),
+                )
+                if mega_type:
+                    mega_gfx = mega.get("graphical_culture", "none")
+                    flag_name = f"continuum_host_{mega_type}_{mega_gfx}"
+                    init_effects.append(f'{tabs}\tset_planet_flag = {flag_name}')
+                    if 'name' in mega:
+                        clean_name = mega["name"].replace('"', '\\"')
+                        init_effects.append(f'{tabs}\tset_variable = {{ which = continuum_mega_name value = "{clean_name}" }}')
             if body.get("planet_class") == "pc_habitat":
                 init_effects.append(f'{tabs}\tset_planet_flag = habitat')
             if devastation_system is not None and str(sys_id) == str(devastation_system) and continuum_empires.is_habitable_class(body.get("planet_class")):
                 init_effects.append(f'{tabs}\tset_planet_flag = continuum_cw_devastation')
             for fl in (extra_planet_flags or {}).get(str(body.get("id")), []):
                 init_effects.append(f'{tabs}\tset_planet_flag = {fl}')
+            unclaimed = _aged_unclaimed_system(sys_id, extra_star_flags)
             for dtype in body.get("deposit_types") or []:
+                if unclaimed and _mega_upkeep_token(dtype):
+                    continue
                 if dtype in allowed_deposits:
                     init_effects.append(f'{tabs}\tadd_deposit = {dtype}')
                 else:
                     skipped_deposits[dtype] += 1
             for mod in body.get("timed_modifiers") or []:
                 if mod in SKIP_COPIED_MODIFIERS:
+                    continue
+                if unclaimed and _mega_upkeep_token(mod):
                     continue
                 if mod in allowed_modifiers:
                     init_effects.append(f'{tabs}\tadd_modifier = {{ modifier = "{mod}" days = -1 }}')
@@ -1147,7 +1184,7 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
 
             copy_flags = [
                 fl for fl in (system.get('flags') or [])
-                if fl in ('lgate', 'lcluster1', 'lcluster', 'lcluster_lgate', 'terminal_egress', 'shroudwalker_enclave_system', 'enclave', 'shroud_tunnel_nexus')
+                if fl in ('lgate', 'lcluster1', 'lcluster', 'lcluster_lgate', 'terminal_egress', 'chosen_system', 'formless_system', 'shroudwalker_enclave_system', 'enclave', 'shroud_tunnel_nexus')
                 or str(fl).startswith('lcluster')
                 or fl in NPC_STAR_FLAGS
                 or str(fl).startswith('guardians_')
@@ -1167,6 +1204,8 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                         npc_flags_copied[fl] += 1
                     if fl == 'lcluster1':
                         f.write('\t\tsave_global_event_target_as = lcluster1\n')
+                    if fl == 'formless_system':
+                        f.write('\t\tsave_global_event_target_as = formless_system\n')
                     if fl in ("continuum_galaxy", "continuum_present", "continuum_aged") and fl not in wrote_global_flags:
                         f.write(f'\t\tset_global_flag = {fl}\n')
                         wrote_global_flags.add(fl)
@@ -1177,7 +1216,12 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                         f.write(f'\t\tadd_asteroid_belt = {{ radius = {belt_radius:.2f} type = {belt_type} }}\n')
                 if has_megas:
                     for mega in megastructures_by_system[sys_id]:
-                        mega_type = _ruin_unclaimed_mega(mega.get("type"), sys_id, extra_star_flags)
+                        mega_type = _ruin_unclaimed_mega(
+                            mega.get("type"), sys_id, extra_star_flags,
+                            mega_keys=set(all_mega_definitions or ()),
+                        )
+                        if not mega_type:
+                            continue
                         param_dict = {'type': f'type = {mega_type}'}
                         if 'name' in mega:
                             clean_name = mega["name"].replace('"', '\\"')
@@ -1274,6 +1318,59 @@ def write_on_actions_file(output_path, has_wormholes, has_planet_megas, has_shro
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(content)
+
+def write_vanilla_spawn_guards_file(output_path):
+    """Skip vanilla The Chosen cluster if Pre already has chosen_system / L-cluster."""
+    content = """namespace = ancrel
+# Replaces vanilla ancrel.12050 (on_game_start). Same weights, but the Chosen
+# branch is 0 if this galaxy already restored a chosen_system or lcluster1.
+event = {
+	id = ancrel.12050
+	is_triggered_only = yes
+	hide_window = yes
+
+	immediate = {
+		random_list = {
+			2 = { }
+			1 = {
+				random_rim_system = {
+					limit = { is_mindwardens_story_system = no }
+					system_event = { id = ancrel.12055 }
+				}
+			}
+			1 = {
+				modifier = {
+					factor = 0
+					has_first_contact_dlc = no
+				}
+				modifier = {
+					factor = 0
+					is_difficulty = 0
+				}
+				modifier = {
+					factor = 0
+					num_ai_empires_setting = 0
+				}
+				modifier = {
+					factor = 0
+					any_system = { has_star_flag = chosen_system }
+				}
+				modifier = {
+					factor = 0
+					any_system = { has_star_flag = lcluster1 }
+				}
+				random_rim_system = {
+					limit = { is_mindwardens_story_system = no }
+					system_event = { id = fircon.3500 }
+				}
+			}
+		}
+	}
+}
+"""
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
 
 def write_lgate_events_file(output_path):
     content = """namespace = continuum_lgate
@@ -2057,14 +2154,20 @@ event = {{
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(content)
 
-def write_megastructure_events_file(output_path, planet_megas):
+def write_megastructure_events_file(output_path, planet_megas, mega_keys=None):
     if not planet_megas: return
 
     unique_megas = set()
+    keys = mega_keys or set()
     for mega in planet_megas:
         mega_type = mega.get("type")
         mega_gfx = mega.get("graphical_culture", "none")
+        if not mega_type:
+            continue
         unique_megas.add((mega_type, mega_gfx))
+        ruined = _mega_ruin_target(mega_type, keys)
+        if ruined and ruined != mega_type:
+            unique_megas.add((ruined, mega_gfx))
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write("namespace = continuum_megastructure\n\n")
@@ -2352,9 +2455,10 @@ def main():
         clean_save_version = ".".join(re.findall(r'(\d+)', save_version_str)[0:2])
         if float(clean_save_version) < float(SUPPORTED_STELLARIS_VERSION):
             print(f"\n--- WARNING: This save is for Stellaris {save_version_str}, but this parser is for {SUPPORTED_STELLARIS_VERSION}.0+. ---")
-            print("Please re-save your game in the latest version of Stellaris for best results.")
-            if input("Continue anyway? (y/n): ").lower() != 'y':
-                print("Parsing cancelled."); input("Press Enter to exit."); return
+            print("4.5 Cygnus cannot load 4.4 saves in-game. Parsing a 4.4 file still works; prefer a 4.5 save.")
+            if not argv_start:
+                if input("Continue anyway? (y/n): ").lower() != 'y':
+                    print("Parsing cancelled."); input("Press Enter to exit."); return
     except Exception:
         print(f"Warning: Could not parse version string '{save_version_str}'.")
 
@@ -2466,7 +2570,7 @@ def main():
         aged_galaxy, aged_nebulas, lane_stats = continuum_aged.age_galaxy(
             galaxy_data, parsed_nebulas, existing_wormholes=wormhole_pairs
         )
-        print(f"Continuum Aged {continuum_aged.AGED_YEARS} years: lanes kept={lane_stats['kept']} dropped={lane_stats['dropped']} added={lane_stats['added']}")
+        print(f"Continuum Aged {continuum_aged.AGED_YEARS} years: lanes kept={lane_stats['kept']} dropped={lane_stats['dropped']} added={lane_stats['added']} orphans={lane_stats.get('orphan_comps', 0)} isolates={lane_stats.get('isolates', 0)}")
         if lane_stats.get("bands"):
             b = lane_stats["bands"]
             print(f"  drift inner {b.get('inner')} | mid {b.get('mid')} | outer {b.get('outer')}")
@@ -2496,12 +2600,14 @@ def main():
         trait_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/traits'))
         civic_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/governments/civics'))
         ethic_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/ethics'))
-        tech_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/technology'))
+        tech_files = find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/technology')
+        tech_keys = parse_script_keys(tech_files)
+        tech_pots = continuum_empires.parse_tech_potentials(tech_files)
         continuum_empires.write_intro_and_empire_events(
             output_events_dir, loc_extra, empire_plan,
             empire_plan.get("empires") or [], empire_plan.get("species") or {},
             empire_plan.get("owned") or {}, empire_plan.get("capitals") or {},
-            trait_keys, civic_keys, ethic_keys, tech_keys=tech_keys
+            trait_keys, civic_keys, ethic_keys, tech_keys=tech_keys, tech_pots=tech_pots
         )
         continuum_empires.write_opinion_file(os.path.join(output_opinion_dir, "continuum_opinion_modifiers.txt"))
         write_localisation_file(os.path.join(output_loc_dir, "continuum_l_english.yml"), extra_keys=loc_extra)
@@ -2509,10 +2615,14 @@ def main():
         
         n_wh = max(len(wormhole_pairs), len(aged_wormholes))
         write_wormhole_events_file(output_wormhole_events_file, n_wh)
-        write_megastructure_events_file(output_mega_events_file, planet_bound_megas)
+        write_megastructure_events_file(
+            output_mega_events_file, planet_bound_megas,
+            mega_keys=set(all_mega_definitions or ()),
+        )
         write_scripted_effects_file(output_wormhole_effects_file, n_wh)
         if has_shroud_data:
             write_shroud_tunnel_events_file(os.path.join(output_events_dir, "continuum_shroud_events.txt"))
+        write_vanilla_spawn_guards_file(os.path.join(output_events_dir, "continuum_vanilla_guards.txt"))
         if has_open_lgates:
             write_lgate_events_file(os.path.join(output_events_dir, "continuum_lgate_events.txt"))
         write_npc_effects_file(os.path.join(output_effects_dir, "continuum_npc_effects.txt"))

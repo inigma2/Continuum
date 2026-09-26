@@ -104,10 +104,14 @@ def _dist(a, b):
     return math.hypot(float(a.get("x") or 0) - float(b.get("x") or 0), float(a.get("y") or 0) - float(b.get("y") or 0))
 
 
-def _is_lcluster(sys):
+def _is_sealed_system(sys):
+    """Off-map clusters: L-cluster, Chosen, Formless (no hyperlanes in vanilla)."""
     for fl in sys.get("flags") or []:
         s = str(fl)
-        if s in ("lcluster", "lcluster1", "lcluster_lgate", "terminal_egress") or s.startswith("lcluster"):
+        if s in (
+            "lcluster", "lcluster1", "lcluster_lgate", "terminal_egress",
+            "chosen_system", "formless_system",
+        ) or s.startswith("lcluster"):
             return True
     return False
 
@@ -261,8 +265,8 @@ def rebuild_hyperlanes(galaxy_data, orig_pairs, cx, cy, rmax):
         sid: (math.hypot(p[0] - cx, p[1] - cy) / rmax if rmax else 0.0)
         for sid, p in pos.items()
     }
-    galactic = [sid for sid, s in by_id.items() if not _is_lcluster(s)]
-    lcluster = [sid for sid, s in by_id.items() if _is_lcluster(s)]
+    galactic = [sid for sid, s in by_id.items() if not _is_sealed_system(s)]
+    lcluster = [sid for sid, s in by_id.items() if _is_sealed_system(s)]
     adj = defaultdict(set)
     kept, added, dropped = [], [], []
     new_set = set()
@@ -274,12 +278,12 @@ def rebuild_hyperlanes(galaxy_data, orig_pairs, cx, cy, rmax):
     median_pre = orig_lens[len(orig_lens) // 2]
     max_new = max(48.0, median_pre * 1.85)
 
-    def try_add(a, b, kind, force=False):
+    def try_add(a, b, kind, force=False, allow_cross=False):
         if a == b or a not in by_id or b not in by_id:
             return False
         if a in adj[b]:
             return False
-        if _is_lcluster(by_id[a]) != _is_lcluster(by_id[b]):
+        if _is_sealed_system(by_id[a]) != _is_sealed_system(by_id[b]):
             return False
         if (
             not force
@@ -288,7 +292,7 @@ def rebuild_hyperlanes(galaxy_data, orig_pairs, cx, cy, rmax):
             and (_zone(frac[a]) == "outer" or _zone(frac[b]) == "outer")
         ):
             return False
-        if _crosses_any(a, b, adj, pos):
+        if not allow_cross and _crosses_any(a, b, adj, pos):
             return False
         _add_edge(adj, a, b)
         if kind == "keep":
@@ -302,8 +306,8 @@ def rebuild_hyperlanes(galaxy_data, orig_pairs, cx, cy, rmax):
     for a, b, _orig in orig_pairs:
         if a not in by_id or b not in by_id:
             continue
-        if _is_lcluster(by_id[a]) or _is_lcluster(by_id[b]):
-            if tuple(sorted((a, b))) in pre_set and _is_lcluster(by_id[a]) and _is_lcluster(by_id[b]):
+        if _is_sealed_system(by_id[a]) or _is_sealed_system(by_id[b]):
+            if tuple(sorted((a, b))) in pre_set and _is_sealed_system(by_id[a]) and _is_sealed_system(by_id[b]):
                 try_add(a, b, "keep")
             continue
         za, zb = _zone(frac[a]), _zone(frac[b])
@@ -353,8 +357,41 @@ def rebuild_hyperlanes(galaxy_data, orig_pairs, cx, cy, rmax):
 
     planarize(adj, pos)
 
-    # One net except L-cluster.
+    # One galactic net except L-cluster. Pre density must not leave islands:
+    # stitch first (may go over target), then trim non-bridge extras.
     forbidden = set()
+    for _ in range(len(galactic) + 8):
+        comps = _components(adj, galactic)
+        if len(comps) <= 1:
+            break
+        giant = set(comps[0])
+        best = None
+        for comp in comps[1:]:
+            for sid in comp:
+                near = _k_nearest(sid, list(giant), pos, k=16) or list(giant)
+                for oid in near:
+                    key = tuple(sorted((sid, oid)))
+                    if key in forbidden:
+                        continue
+                    dd = _dist(by_id[sid], by_id[oid])
+                    crosses = 1 if _crosses_any(sid, oid, adj, pos) else 0
+                    cand = (crosses, dd, sid, oid)
+                    if best is None or cand < best:
+                        best = cand
+        if best is None:
+            break
+        _cross, _dd, a, b = best
+        if (
+            try_add(a, b, "new")
+            or try_add(a, b, "new", force=True)
+            or try_add(a, b, "new", force=True, allow_cross=True)
+        ):
+            continue
+        forbidden.add(tuple(sorted((a, b))))
+
+    _trim_to_pre_density(adj, pos, new_set, target=pre_target)
+
+    # Trim never drops bridges, but if density still left a leftover, stitch it.
     for _ in range(len(galactic) + 4):
         comps = _components(adj, galactic)
         if len(comps) <= 1:
@@ -363,39 +400,28 @@ def rebuild_hyperlanes(galaxy_data, orig_pairs, cx, cy, rmax):
         best = None
         for comp in comps[1:]:
             for sid in comp:
-                for oid in _k_nearest(sid, list(giant), pos, k=12):
-                    key = tuple(sorted((sid, oid)))
-                    if key in forbidden:
-                        continue
-                    if _is_unstable_star(by_id[oid]):
-                        continue
-                    if _crosses_any(sid, oid, adj, pos):
-                        continue
+                for oid in _k_nearest(sid, list(giant), pos, k=16) or list(giant):
                     dd = _dist(by_id[sid], by_id[oid])
-                    if best is None or dd < best[0]:
-                        best = (dd, sid, oid)
-        if best is None:
-            for comp in comps[1:]:
-                for sid in comp:
-                    for oid in giant:
-                        key = tuple(sorted((sid, oid)))
-                        if key in forbidden:
-                            continue
-                        if _crosses_any(sid, oid, adj, pos):
-                            continue
-                        dd = _dist(by_id[sid], by_id[oid])
-                        if best is None or dd < best[0]:
-                            best = (dd, sid, oid)
+                    crosses = 1 if _crosses_any(sid, oid, adj, pos) else 0
+                    cand = (crosses, dd, sid, oid)
+                    if best is None or cand < best:
+                        best = cand
         if not best:
             break
-        if _n_lanes(adj) >= pre_target:
+        _cross, _dd, a, b = best
+        if not (
+            try_add(a, b, "new", force=True)
+            or try_add(a, b, "new", force=True, allow_cross=True)
+        ):
             break
-        if not try_add(best[1], best[2], "new") and not try_add(best[1], best[2], "new", force=True):
-            forbidden.add(tuple(sorted((best[1], best[2]))))
-
-    _trim_to_pre_density(adj, pos, new_set, target=pre_target)
 
     # Keep L-cluster internal Pre lanes already added; don't stitch cluster to galaxy.
+    for sid in list(adj):
+        if sid not in by_id:
+            continue
+        for oid in list(adj[sid]):
+            if oid in by_id and _is_sealed_system(by_id[sid]) != _is_sealed_system(by_id[oid]):
+                _del_edge(adj, sid, oid)
 
     cut = []
     for sid, s in by_id.items():
@@ -405,11 +431,15 @@ def rebuild_hyperlanes(galaxy_data, orig_pairs, cx, cy, rmax):
             s["aged_pre_links_lost"] = True
             cut.append(sid)
 
+    gal_comps = _components(adj, galactic)
+    isolates = [sid for sid in galactic if not adj.get(sid)]
     return adj, {
         "kept": len(kept),
         "dropped": len(dropped),
         "added": len(added),
         "cut": len(cut),
+        "orphan_comps": max(0, len(gal_comps) - 1),
+        "isolates": len(isolates),
     }, kept, dropped, added
 
 
@@ -470,7 +500,7 @@ def _nearest_stable(sid, by_id, used=None):
     s = by_id[sid]
     best, bestd = None, None
     for oid, o in by_id.items():
-        if oid == sid or oid in used or _is_lcluster(o) or _is_unstable_star(o):
+        if oid == sid or oid in used or _is_sealed_system(o) or _is_unstable_star(o):
             continue
         dd = _dist(s, o)
         if bestd is None or dd < bestd:
@@ -494,7 +524,7 @@ def convert_rim_wormholes(galaxy_data, adj, existing_pairs=None, max_n=2):
     rmax = max(math.hypot(x - cx, y - cy) for x, y in zip(xs, ys)) or 1.0
     cands = []
     for sid, s in by_id.items():
-        if _is_lcluster(s) or sid in occupied:
+        if _is_sealed_system(s) or sid in occupied:
             continue
         r = math.hypot(float(s.get("x") or 0) - cx, float(s.get("y") or 0) - cy)
         if r < 0.70 * rmax:
@@ -562,6 +592,8 @@ def age_galaxy(galaxy_data, nebulas=None, years=AGED_YEARS, existing_wormholes=N
         "wormhole_labels": hole_labels,
         "bands": bands,
         "max_keep": 0,
+        "orphan_comps": counts.get("orphan_comps") or 0,
+        "isolates": counts.get("isolates") or 0,
     }
 
 
@@ -1067,6 +1099,59 @@ def sever_empires(plan, aged_galaxy):
     splinters = keep_spl
 
     n_sys = max(1, len(aged_galaxy))
+    living = [
+        (len(remnant.get(c) or []), c)
+        for c in list(keep_ids) + list(preserve_ids)
+        if remnant.get(c)
+    ]
+    living.sort(reverse=True)
+    n_pre = len(defaults)
+    fat10 = 0.10 * n_sys
+    max_new_fe = 4
+    picks = []
+    if living:
+        picks.append(living[0][1])
+    if (
+        len(picks) < max_new_fe
+        and n_pre >= 8
+        and len(living) > 1
+        and living[1][0] > fat10
+    ):
+        picks.append(living[1][1])
+    picks = picks[:max_new_fe]
+    max_own_now = max(1, int(0.20 * n_sys))
+    for cid in picks:
+        syss = [str(s) for s in (remnant.get(cid) or [])]
+        cap = str(capitals.get(cid) or (syss[0] if syss else ""))
+        hops = _hops_from(adj, cap)
+        ordered = sorted(syss, key=lambda s: (0 if s == cap else 1, hops.get(s, 99)))
+        keep_n = min(5, max(3, min(len(ordered), 5))) if len(ordered) >= 3 else len(ordered)
+        core = ordered[:keep_n]
+        surplus = [s for s in syss if s not in set(core)]
+        remnant[cid] = core
+        for sid in surplus:
+            nbs = [str(n) for n in adj.get(sid, ())]
+            owners = []
+            for n in nbs:
+                for oc, osyss in remnant.items():
+                    if oc == cid:
+                        continue
+                    if n in {str(x) for x in osyss}:
+                        owners.append(oc)
+            owners = list(dict.fromkeys(owners))
+            if (
+                len(owners) == 1
+                and len(remnant.get(owners[0]) or []) + 1 <= max_own_now
+            ):
+                remnant[owners[0]].append(sid)
+            else:
+                fallow.add(sid)
+        print(
+            f"Aged Fallen: {emp_by_id.get(cid, {}).get('name')} "
+            f"core {len(core)} surplus {len(surplus)}"
+        )
+    plan["aged_fallen_ids"] = picks
+
     target_frac = rng.uniform(0.24, 0.34)
     target_n = int(round(target_frac * n_sys))
 
@@ -1211,6 +1296,9 @@ def sever_empires(plan, aged_galaxy):
             if not piece:
                 continue
             spl = _filter_emp_to_systems(parent_emp, piece, p2s, c2p)
+            if not (spl.get("colony_pop") or {}):
+                fallow.update(str(s) for s in piece)
+                continue
             spl["origin"] = "origin_default"
             spl["_buffer"] = True
             spl["_parent_idx"] = parent_idx
@@ -1256,6 +1344,39 @@ def sever_empires(plan, aged_galaxy):
             f"Aged buffer: splinter {spl.get('_home')} peeled {len(take)} -> {n_buf} fringe"
         )
 
+    max_fallow = int(round(0.34 * n_sys))
+    while len(fallow) > max_fallow:
+        absorbed = False
+        for sid in list(fallow):
+            if sid in spawn:
+                continue
+            nbs = [str(n) for n in adj.get(str(sid), ())]
+            owners = []
+            for n in nbs:
+                for oc, osyss in remnant.items():
+                    if oc in (plan.get("aged_fallen_ids") or []):
+                        continue
+                    if n in {str(x) for x in osyss}:
+                        owners.append(oc)
+            owners = list(dict.fromkeys(owners))
+            if (
+                len(owners) == 1
+                and len(remnant.get(owners[0]) or []) + 1 <= max_own
+            ):
+                remnant[owners[0]].append(sid)
+                fallow.discard(sid)
+                absorbed = True
+                if len(fallow) <= max_fallow:
+                    break
+        if not absorbed:
+            break
+    alive = []
+    for spl in splinters:
+        if spl.get("colony_pop"):
+            alive.append(spl)
+        else:
+            fallow.update(str(s) for s in (spl.get("_systems") or []))
+    splinters = alive
     print(
         f"Aged fallow target {target_frac:.0%} ({target_n}/{n_sys}) actual {len(fallow)} "
         f"({len(fallow) / n_sys:.0%}) splinters_left={len(splinters)} cap={max_own} fat={fat}"
@@ -1357,8 +1478,8 @@ def apply_aged_flags(plan, sever):
     """Rebuild Aged star/planet flags: remnant, splinters, fallow, prim FTL."""
     import continuum_empires as ce
 
-    flags = _strip_owner_flags(plan.get("extra_flags"), ("continuum_emp_", "continuum_fe_", "continuum_prim_", "continuum_spl_", "continuum_newprim_"))
-    planet_flags = _strip_owner_flags(plan.get("planet_flags"), ("continuum_emp_", "continuum_fe_", "continuum_prim_", "continuum_spl_", "continuum_newprim_"))
+    flags = _strip_owner_flags(plan.get("extra_flags"), ("continuum_emp_", "continuum_fe_", "continuum_prim_", "continuum_spl_", "continuum_newprim_", "continuum_agefe_"))
+    planet_flags = _strip_owner_flags(plan.get("planet_flags"), ("continuum_emp_", "continuum_fe_", "continuum_prim_", "continuum_spl_", "continuum_newprim_", "continuum_agefe_"))
     c2p = plan.get("colony_to_planet") or {}
     p2s = plan.get("planet_to_system") or {}
     defaults = list(plan.get("empires") or [])
@@ -1385,7 +1506,61 @@ def apply_aged_flags(plan, sever):
         fe_emps.append(e2)
         cap = (plan.get("fallen_capitals") or {}).get(emp["id"])
         fe_caps[emp["id"]] = cap if cap and str(cap) in syss else (syss[0] if syss else cap)
-    ce._tag_owned_planets(rem_emps, c2p, "continuum_emp", flags, planet_flags, remnant, rem_caps)
+    fallen_set = set(plan.get("aged_fallen_ids") or [])
+    for emp in rem_emps:
+        if emp["id"] in fallen_set:
+            emp["type"] = "fallen_empire"
+            emp["_aged_fallen"] = True
+            cap = rem_caps.get(emp["id"])
+            syss = [str(s) for s in (remnant.get(emp["id"]) or [])]
+            emp["starbases"] = {
+                s: ("starbase_citadel" if cap and str(s) == str(cap) else "starbase_outpost")
+                for s in syss
+            }
+    extinct_set = set(plan.get("aged_extinct_ids") or [])
+    tag_emps = [
+        e for e in rem_emps
+        if e["id"] not in fallen_set and e["id"] not in extinct_set
+    ]
+    tag_owned = {e["id"]: remnant.get(e["id"]) or [] for e in tag_emps}
+    tag_caps = {e["id"]: rem_caps.get(e["id"]) for e in tag_emps}
+    # Same indices as events enumerate(empires). Filtering Fallen out of
+    # tag_emps used to shift emp_N, so starbases/megas pointed at a
+    # PRESENT-only country and the system stayed unowned.
+    emp_idx = {e["id"]: i for i, e in enumerate(defaults)}
+    ce._tag_owned_planets(
+        tag_emps, c2p, "continuum_emp", flags, planet_flags, tag_owned, tag_caps,
+        indices=emp_idx,
+    )
+    agefe_tags, agefe_owned, agefe_caps = [], {}, {}
+    for i, fid in enumerate(plan.get("aged_fallen_ids") or []):
+        emp = next((e for e in rem_emps if e["id"] == fid), None)
+        if not emp:
+            continue
+        key = f"agefe{i}"
+        wrapped = dict(emp)
+        wrapped["id"] = key
+        agefe_tags.append(wrapped)
+        agefe_owned[key] = remnant.get(fid) or []
+        agefe_caps[key] = rem_caps.get(fid)
+        pids = list((emp.get("colony_pop") or {}).keys())
+        cap_col = emp.get("capital")
+        cap_pid = str(c2p.get(str(cap_col), cap_col)) if cap_col is not None else None
+        gaia = []
+        if cap_pid:
+            gaia.append(str(cap_pid))
+        for pid in pids:
+            pid = str(c2p.get(str(pid), pid))
+            if pid not in gaia:
+                gaia.append(pid)
+            if len(gaia) >= 2:
+                break
+        for j, pid in enumerate(gaia):
+            planet_flags.setdefault(pid, []).append(f"continuum_agefe_{i}_gaia")
+            if j == 0:
+                planet_flags.setdefault(pid, []).append(f"continuum_agefe_{i}_palace")
+    if agefe_tags:
+        ce._tag_owned_planets(agefe_tags, c2p, "continuum_agefe", flags, planet_flags, agefe_owned, agefe_caps)
     ce._tag_owned_planets(fe_emps, c2p, "continuum_fe", flags, planet_flags, fe_remnant, fe_caps)
     spl_owned = {}
     spl_caps = {}
@@ -1398,8 +1573,20 @@ def apply_aged_flags(plan, sever):
         for sid in spl_owned[oid]:
             spl.setdefault("starbases", {}).setdefault(str(sid), "starbase_outpost")
     ce._tag_owned_planets(sever["splinters"] + sever["fe_ftl"], c2p, "continuum_spl", flags, planet_flags, spl_owned, spl_caps)
+    def _has_living_owner(fls):
+        for f in fls or []:
+            s = str(f)
+            for pfx in ("continuum_emp_", "continuum_spl_", "continuum_fe_", "continuum_agefe_"):
+                rest = s[len(pfx):] if s.startswith(pfx) else None
+                if rest and rest.split("_", 1)[0].isdigit():
+                    return True
+        return False
+
     for sid in sever["fallow"]:
-        flags.setdefault(str(sid), []).append("continuum_aged_fallow")
+        key = str(sid)
+        if _has_living_owner(flags.get(key)):
+            continue
+        flags.setdefault(key, []).append("continuum_aged_fallow")
     prim_ftl = set(sever.get("prim_ftl") or [])
     for idx, prim in enumerate(plan.get("primitives") or []):
         sid = prim.get("system_id")
