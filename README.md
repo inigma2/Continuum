@@ -4,9 +4,17 @@ A Stellaris galaxy converter — one galaxy to rule them all.
 
 Turn a finished (or mid-game) save into a playable **static galaxy** for a new game. The Python parser reads your `.sav` and writes the imported galaxy into the Continuum mod folder.
 
-- **Current:** 0.8.5 for Stellaris **4.5.*** (Cygnus) — **Continuum Present** and **Continuum Aged**
+- **Current:** 0.8.6 for Stellaris **4.5.*** (Cygnus) — **Continuum Present** and **Continuum Aged**
 - Workshop: https://steamcommunity.com/sharedfiles/filedetails/?id=3554276594
 - Roadmap: https://steamcommunity.com/workshop/filedetails/discussion/3554276594/596284386694022138/
+
+## 0.8.6
+
+Stellaris **4.5.*** (Cygnus). One parse, two Galaxy Sizes. Date stays 2200. You are a new empire.
+
+**Graves:** cracked worlds, shielded bottles, tomb grids, shroud and nanite leftovers from the imported save become archaeological sites on Present and Aged. Up to 18 sites, unique per world, hidden until you survey or own the system. Three-chapter digs; Aged prose is myth, Present is after-action. Crystal asteroid belts are no longer player homeworlds.
+
+Merged stars, a history sidecar, and Fallen-as-precursor graves are **not** in 0.8.6 (ledger 0.8.7, sleepers 0.8.8).
 
 ## 0.8.5
 
@@ -16,7 +24,7 @@ Stellaris **4.5.*** (Cygnus). One parse, two Galaxy Sizes. Date stays 2200. You 
 
 **4.5:** country ethics and pop-group ethos restore correctly. Machine remnants use the MACHINE archetype. Clockwise differential drift and keep/preserve/extinct weeding are unchanged from 0.8.4. Leftover primitives that reach FTL get successor names (Directorate, Senate, …), not “Civilization”.
 
-Archaeology / graves, Merged stars, and an age slider are **not** in 0.8.5 (graves target 0.8.6).
+Archaeology / graves landed in 0.8.6. Merged stars and an age slider are still later.
 
 ## 0.8.4
 
@@ -52,7 +60,7 @@ Stellaris loads the **runtime** copy, usually:
 
 `Documents/Paradox Interactive/Stellaris/mod/continuum`
 
-Copy the Python modules (`continuum_parser.py`, `continuum_empires.py`, `continuum_aged.py`, `continuum_cp.py`, `continuum_fauna.py`, `continuum_player.py`), `descriptor.mod`, `thumbnail.png`, and `localisation/` into that folder (or run the parser from a copy of this `continuum/` directory placed there). The parser **writes generated files next to itself** — map, initializers, events — from the save you pick. Do not commit those generated files (`map/`, `common/`, `events/`). Do not ship `continuum_verify.py` (dev inventory only).
+Copy the Python modules (`continuum_parser.py`, `continuum_empires.py`, `continuum_aged.py`, `continuum_cp.py`, `continuum_fauna.py`, `continuum_player.py`, `continuum_graves.py`), `descriptor.mod`, `thumbnail.png`, and `localisation/` into that folder (or run the parser from a copy of this `continuum/` directory placed there). The parser **writes generated files next to itself** — map, initializers, events — from the save you pick. Do not commit those generated files (`map/`, `common/`, `events/`). Do not ship `continuum_verify.py` (dev inventory only).
 
 ## Continuum Present (0.7.5)
 

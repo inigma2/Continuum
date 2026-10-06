@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.6 — 2026-10-06
+
+Stellaris **4.5.*** (Cygnus). Continuum Present and Continuum Aged.
+
+### Graves
+- Visible catastrophe leftovers from the imported save become archaeological sites on **Present** and **Aged**: cracked / shattered / broken worlds, Global Pacifier bottles, tomb worlds, shroud and nanite scars (infested, machine, and suspicious black holes when those leftovers exist).
+- Cap **18** sites, **5** per kind. One unique site type per planet (Stellaris allows only one instance of each type).
+- Sites stay hidden until you survey the system or own it (`default_site_visible_trigger`). Fallen-space graves can show as Excavation File Locked until you have intel.
+- Three-chapter digs. Present loc is after-action; Aged loc is campfire myth.
+- No sidecar yet. Battlefields and neutron-sweep worlds with no class change stay silent until 0.8.7.
+
+### Starts
+- Crystal asteroid belts are no longer offered as empire homeworlds (vanilla has no asteroid origin; void dwellers use habitats).
+
+### Not in 0.8.6
+- History sidecar / battle / neutron / crisis husks (0.8.7 Ledger).
+- Aged Fallen-as-precursor graves (0.8.8 Sleepers).
+- Merged stars, age slider, in-game parser.
+- Wars, live Cosmic Storms objects, federation laws (membership `join_alliance` only).
+- Nomad arkship restore (you may found a nomad in the empire creator).
+
 ## 0.8.5 — 2026-09-26
 
 Stellaris **4.5.*** (Cygnus). Continuum Present and Continuum Aged.

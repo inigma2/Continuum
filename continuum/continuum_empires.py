@@ -8,6 +8,7 @@ import continuum_cp
 UNINHABITABLE_CLASSES = frozenset({
     "pc_barren", "pc_barren_cold", "pc_toxic", "pc_frozen", "pc_molten",
     "pc_gas_giant", "pc_asteroid", "pc_ice_asteroid", "pc_rare_crystal_asteroid",
+    "pc_crystal_asteroid",
     "pc_shattered", "pc_shattered_2", "pc_broken", "pc_cracked", "pc_shielded",
     "pc_ai", "pc_infested", "pc_gray_goo", "pc_egg_cracked",
     "pc_shrouded",
@@ -170,6 +171,9 @@ def is_habitable_class(planet_class):
         return False
     pc = planet_class.strip('"')
     if pc in UNINHABITABLE_CLASSES or pc.startswith("pc_shrouded"):
+        return False
+    # Vanilla has no asteroid homeworld (void dwellers use habitats).
+    if "asteroid" in pc:
         return False
     if any(s in pc for s in ("_star", "black_hole", "pulsar", "neutron", "quasar")):
         return False

@@ -9,6 +9,7 @@ import shutil
 import json
 import datetime
 import continuum_empires
+import continuum_graves
 
 # Conditional import for Windows-specific registry access
 if sys.platform == "win32":
@@ -16,7 +17,7 @@ if sys.platform == "win32":
 
 # --- CONFIGURATION ---
 SUPPORTED_STELLARIS_VERSION = "4.5"
-MOD_VERSION = "0.8.5"
+MOD_VERSION = "0.8.6"
 VANILLA_GALAXY_SHAPES = (
     "elliptical",
     "spiral_2",
@@ -1282,8 +1283,10 @@ def find_body_in_system(hierarchy_root, target_id):
             queue.extend(body['children'])
     return None
 
-def write_on_actions_file(output_path, has_wormholes, has_planet_megas, has_shroud_enclave, has_open_lgates=False, has_npcs=True, has_empires=False):
+def write_on_actions_file(output_path, has_wormholes, has_planet_megas, has_shroud_enclave, has_open_lgates=False, has_npcs=True, has_empires=False, has_graves=False):
     content = "# These should run after the static galaxy has been generated.\n\non_game_start = {\n\tevents = {\n"
+    if has_graves:
+        content += "\t\tcontinuum_graves.0 # seed catastrophe anomalies on flagged worlds\n"
     if has_planet_megas:
         content += "\t\tcontinuum_megastructure.1 # spawn planet-bound megastructures\n"
     if has_open_lgates:
@@ -2534,6 +2537,10 @@ def main():
         print(f"Restored primitives: {len(empire_plan.get('primitives') or [])}")
         print(f"Spawn-weight systems: {len(empire_plan.get('spawn_ids') or [])}")
         print(f"Present crisis in save: {bool(empire_plan.get('had_crisis'))}")
+        graves = continuum_graves.classify_graves(galaxy_data)
+        empire_plan["planet_flags"] = continuum_graves.apply_grave_flags(
+            graves, empire_plan.get("planet_flags")
+        )
         import continuum_fauna
         fauna_snap = continuum_fauna.parse_fauna_snapshot(save_file_path)
         for sid in fauna_snap.get("systems") or []:
@@ -2597,6 +2604,7 @@ def main():
         write_map_file(aged_galaxy, aged_nebulas, aged_wormholes, output_aged_map_file, localization, spawn_ids=aged_spawn_ids, spawn_weights=aged_spawn, scenario_name="continuum_aged", init_prefix="continuum_aged_init", galaxy_star_flags=["continuum_galaxy", "continuum_aged"])
         write_initializer_file(aged_galaxy, parsed_megastructures, start_system_id, output_aged_init_file, all_mega_definitions, shroud_data, deposit_keys, modifier_keys, spawn_ids=aged_spawn_ids, extra_star_flags=aged_flags, devastation_system=empire_plan.get("devastation_system"), extra_planet_flags=aged_planet_flags, init_prefix="continuum_aged_init")
         loc_extra = {}
+        continuum_graves.write_grave_files(script_dir, loc_extra, graves)
         trait_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/traits'))
         civic_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/governments/civics'))
         ethic_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/ethics'))
@@ -2637,7 +2645,8 @@ def main():
                               has_shroud_enclave=has_shroud_data,
                               has_open_lgates=has_open_lgates,
                               has_npcs=True,
-                              has_empires=bool(empire_plan.get("empires")))
+                              has_empires=bool(empire_plan.get("empires")),
+                              has_graves=True)
         
         print("\n--- PARSING COMPLETE ---")
         print(f"Found {system_count} systems, {counts['nebula']} nebulas, {counts['star']} stars, {counts['planet']} planets, {counts['moon']} moons, and {counts['asteroid']} asteroids.")

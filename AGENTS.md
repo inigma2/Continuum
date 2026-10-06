@@ -7,6 +7,7 @@ Stellaris 4.5.* (Cygnus) save → static galaxy. GitHub is **source**. Play/uplo
 - Paradox Launcher uploads **only** `E:\Users\inigma\Documents\Paradox Interactive\Stellaris\mod\continuum`. Never retarget `continuum.mod` `path=` at `workshop-package`.
 - `remote_file_id="3554276594"` stays on the stub and `descriptor.mod`.
 - `continuum_verify.py` is GitHub-only. Do not ship it on Steam.
+- Ship `continuum_graves.py` with the parser modules. Generated `common/` / `events/` graves files come back on parse.
 - Player is always a **new polity**. Date stays 2200. In-game empire creation, not a prescripted player copy.
 - Spawn-weight on owned colonies is **intentional** unless the user asks to change it. Do not drop a remnant’s last system to make a start.
 
