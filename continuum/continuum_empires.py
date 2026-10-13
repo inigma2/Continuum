@@ -11,7 +11,7 @@ UNINHABITABLE_CLASSES = frozenset({
     "pc_crystal_asteroid",
     "pc_shattered", "pc_shattered_2", "pc_broken", "pc_cracked", "pc_shielded",
     "pc_ai", "pc_infested", "pc_gray_goo", "pc_egg_cracked",
-    "pc_shrouded",
+    "pc_shrouded", "pc_astral_scar",
 })
 UNIQUE_BLOCK_FLAGS = frozenset({
     "guardians_artists_system", "guardians_curators_system", "guardians_traders_system",
@@ -20,7 +20,7 @@ UNIQUE_BLOCK_FLAGS = frozenset({
     "guardians_dragon_system", "guardians_technosphere_system", "guardians_wraith_system",
     "guardians_horror_system", "guardians_dreadnought_system", "guardians_hive_system",
     "guardians_fortress_system", "guardians_stellarite_system", "guardians_hatchling_system",
-    "lcluster1", "lcluster", "terminal_egress", "formless_system", "crystal_home_system",
+    "lcluster1", "lcluster", "terminal_egress", "chosen_system", "formless_system", "crystal_home_system",
     "amoeba_home_system", "drone_home_system", "voidworms_system", "elderly_tiyanki_system",
     "lost_swarm_system", "wenkwort_system",
     "marauder_capital_1", "marauder_capital_2", "marauder_capital_3",
@@ -172,8 +172,8 @@ def is_habitable_class(planet_class):
     pc = planet_class.strip('"')
     if pc in UNINHABITABLE_CLASSES or pc.startswith("pc_shrouded"):
         return False
-    # Vanilla has no asteroid homeworld (void dwellers use habitats).
-    if "asteroid" in pc:
+    # Vanilla has no asteroid or astral-scar homeworld.
+    if "asteroid" in pc or "astral_scar" in pc:
         return False
     if any(s in pc for s in ("_star", "black_hole", "pulsar", "neutron", "quasar")):
         return False
@@ -399,6 +399,8 @@ def parse_countries(data):
             if re.search(rf"\b{a}=", body):
                 age = a
                 break
+        human_date = re.search(r'last_date_was_human=\s*"([^"]+)"', body)
+        played = bool(human_date and human_date.group(1) not in ("0.01.01", "0.1.1"))
         countries.append({
             "id": cid,
             "type": t,
@@ -415,6 +417,7 @@ def parse_countries(data):
             "fallen_n": fe_n.group(1) if fe_n else None,
             "marauder_n": mar_n.group(1) if mar_n else None,
             "pre_ftl_age": age,
+            "played_by_human": played,
             "flag_icon_cat": icon_cat.group(1) if icon_cat else "special",
             "flag_icon": icon_cat.group(2) if icon_cat else "pirate_flag.dds",
             "flag_bg_cat": bg.group(1) if bg else "backgrounds",
@@ -477,6 +480,12 @@ FLEET_DESIGNS = (
 )
 FLEET_MAX_PER_SIZE = 40
 # Spawned via _fe_defense_platforms / _marauder_presence, not the mobile home fleet.
+_HOME_FLEET_TECH = {
+    "corvette": "tech_corvettes",
+    "destroyer": "tech_destroyers",
+    "cruiser": "tech_cruisers",
+    "battleship": "tech_battleships",
+}
 _FLEET_BLOCK_SKIP = frozenset({
     "military_station_small_fallen_empire",
     "small_ship_fallen_empire", "large_ship_fallen_empire", "massive_ship_fallen_empire",
@@ -818,6 +827,45 @@ def system_habitables(galaxy_data, planets):
     return out
 
 
+SEALED_SYSTEM_FLAGS = frozenset({
+    "lcluster", "lcluster1", "lcluster_lgate", "terminal_egress",
+    "chosen_system", "formless_system",
+})
+
+
+def is_sealed_system(sys):
+    """Off-map clusters: L-cluster, The Chosen, Formless. No normal-empire home."""
+    if not sys:
+        return False
+    for fl in sys.get("flags") or []:
+        s = str(fl)
+        if s in SEALED_SYSTEM_FLAGS or s.startswith("lcluster"):
+            return True
+    return False
+
+
+def sealed_home_country_ids(countries, capitals, galaxy_data):
+    """Default empires whose capital or origin system is a sealed cluster.
+
+    A wormhole into the main galaxy does not make The Chosen a normal Pre empire.
+    Their open-galaxy holdings are left unowned.
+    """
+    by_id = {str(s.get("id")): s for s in galaxy_data}
+    out = []
+    for c in countries:
+        if c.get("type") != "default":
+            continue
+        homes = []
+        cap = capitals.get(c["id"])
+        if cap is not None:
+            homes.append(str(cap))
+        if c.get("starting_system"):
+            homes.append(str(c["starting_system"]))
+        if any(is_sealed_system(by_id.get(h)) for h in homes):
+            out.append(c["id"])
+    return out
+
+
 def blocked_systems(galaxy_data):
     blocked = set()
     for sys in galaxy_data:
@@ -997,8 +1045,9 @@ _SUCCESSOR_NOUNS = {
         "Federation", "Alliance", "Senate", "Congress",
     ],
     "auth_oligarchic": [
-        "Directorate", "Polity", "Authority", "Synod", "Seat", "Combine",
-        "Consortium", "Board", "Council",
+        "Directorate", "Polity", "Collegium", "Presidium", "Magistry",
+        "Cabal", "Tribunal", "Stewardship", "Chancellery", "Synod",
+        "Consortium", "Council",
     ],
     "auth_dictatorial": ["Regime", "Order", "Hegemony", "Autocracy", "Command", "Junta"],
     "auth_imperial": ["Empire", "Imperium", "Realm", "Dominion", "Dynasty", "Throne"],
@@ -1014,6 +1063,44 @@ _PREF_TRAITS = (
     "trait_pc_arctic_preference", "trait_pc_alpine_preference", "trait_pc_savannah_preference",
     "trait_pc_nuked_preference", "trait_pc_gaia_preference",
 )
+
+
+# 4.5 authority `possible` blocks. Fanatic authoritarian is autocracy only.
+_AUTH_BANNED_ETHICS = {
+    "auth_democratic": frozenset({
+        "ethic_gestalt_consciousness", "ethic_authoritarian", "ethic_fanatic_authoritarian",
+    }),
+    "auth_oligarchic": frozenset({
+        "ethic_gestalt_consciousness", "ethic_fanatic_authoritarian", "ethic_fanatic_egalitarian",
+    }),
+    "auth_dictatorial": frozenset({
+        "ethic_gestalt_consciousness", "ethic_egalitarian", "ethic_fanatic_egalitarian",
+    }),
+    "auth_imperial": frozenset({
+        "ethic_gestalt_consciousness", "ethic_egalitarian", "ethic_fanatic_egalitarian",
+    }),
+}
+_ETHIC_DOWNGRADE = {
+    "ethic_fanatic_authoritarian": "ethic_authoritarian",
+    "ethic_fanatic_egalitarian": "ethic_egalitarian",
+}
+
+
+def legal_primitive_ethics(ethics, authority):
+    """Drop or soften ethics the primitive authority will not accept."""
+    banned = _AUTH_BANNED_ETHICS.get(authority) or frozenset()
+    out = []
+    for ethic in ethics or []:
+        cur = ethic
+        while cur in banned:
+            cur = _ETHIC_DOWNGRADE.get(cur)
+            if not cur:
+                break
+        if cur and cur not in banned and cur not in out:
+            out.append(cur)
+    if not out:
+        out = ["ethic_xenophile", "ethic_materialist"]
+    return out[:3]
 
 
 def legal_successor_gov(emp, sp, rng, civic_keys=None, ethic_keys=None):
@@ -1136,39 +1223,64 @@ def _place_label(place):
     return s
 
 
-def unique_successor_name(sp_name, authority, used, rng, place=None, sibling_index=0):
-    """First sibling: species + gov noun. Later: landmark/system name + noun."""
+def _title_noun(name):
+    parts = re.findall(r"[A-Za-z]+", str(name or ""))
+    return parts[-1] if parts else ""
+
+
+def unique_successor_name(sp_name, authority, used, rng, place=None, sibling_index=0, spent_nouns=None):
+    """First sibling: species + gov noun. Later: landmark/system name + noun.
+
+    Each government noun is spent once per galaxy, including nouns already
+    trailing a restored empire name. A second pass is allowed only after the
+    pool is empty.
+    """
     stem = display_empire_name(sp_name or "Star")
     if continuum_cp._is_junk_label(stem) or stem in ("Empire", "Unknown", "Star"):
         stem = "Star"
+    spent = spent_nouns if spent_nouns is not None else set()
+    for item in used:
+        if isinstance(item, str) and not item.startswith("noun:"):
+            trail = _title_noun(item)
+            if trail:
+                spent.add(trail.lower())
     nouns = list(_SUCCESSOR_NOUNS.get(authority) or ["Polity"])
-    rng.shuffle(nouns)
+    fresh = [n for n in nouns if n.lower() not in spent]
+    pool = fresh or list(nouns)
+    rng.shuffle(pool)
+
+    def take(noun, nm):
+        if not nm or continuum_cp._is_junk_label(nm) or nm in used:
+            return None
+        used.add(nm)
+        spent.add(noun.lower())
+        return nm
+
     loc = _place_label(place)
     generics = ["Rim", "March", "Reach", "Veil", "Expanse", "Drift", "Watch", "Hold", "Cloister"]
     if sibling_index == 0:
-        for noun in nouns:
-            nm = continuum_cp.apply_adjective(stem, noun)
-            if nm and not continuum_cp._is_junk_label(nm) and nm not in used:
-                used.add(nm)
-                return nm
+        for noun in pool:
+            got = take(noun, continuum_cp.apply_adjective(stem, noun))
+            if got:
+                return got
     label = loc or rng.choice(generics)
-    for noun in nouns:
-        nm = f"{label} {noun}"
-        if nm not in used:
-            used.add(nm)
-            return nm
+    for noun in pool:
+        got = take(noun, f"{label} {noun}")
+        if got:
+            return got
     for g in generics:
-        for noun in nouns:
-            nm = f"{g} {noun}"
-            if nm not in used:
-                used.add(nm)
-                return nm
+        for noun in pool:
+            got = take(noun, f"{g} {noun}")
+            if got:
+                return got
     i = 2
-    nm = f"{label} {nouns[0] if nouns else 'Polity'}"
+    noun0 = pool[0] if pool else "Polity"
+    nm = f"{label} {noun0}"
     while nm in used:
         i += 1
-        nm = f"{label} {nouns[0] if nouns else 'Polity'} {i}"
+        nm = f"{label} {noun0} {i}"
     used.add(nm)
+    spent.add(noun0.lower())
     return nm
 
 
@@ -1918,16 +2030,9 @@ def _starbase_blocks(prefix, idx, owner, emp=None):
 				}}
 			}}""")
             continue
-        if design:
-            design_prep = f"""					event_target:{owner} = {{
-						create_ship_design = {{ design = "{design}" }}
-						add_ship_design = last_created_design
-					}}
-"""
-            design_line = f'\n						design = "{design}"'
-        else:
-            design_prep = ""
-            design_line = ""
+        # A mobile hull is not a legal starbase design. Size alone is.
+        design_prep = ""
+        design_line = ""
         parts.append(f"""			every_system = {{
 				limit = {{
 					has_star_flag = {prefix}_{idx}_{short}
@@ -1961,6 +2066,23 @@ def _pop_ethos_line(ethics, indent="							"):
     return f"\n{indent}ethos = {{ {inner} }}"
 
 
+def _colony_open(emp, owner, species_tgt):
+    """Fallen empires cannot have the normal colony shelter. Own the world directly."""
+    if emp.get("type") == "fallen_empire":
+        return f"""						set_owner = event_target:{owner}
+						set_capital = yes"""
+    return f"""						create_colony = {{
+							owner = event_target:{owner}
+							species = event_target:{species_tgt}
+						}}"""
+
+
+def _colony_close(emp):
+    if emp.get("type") == "fallen_empire":
+        return ""
+    return "						remove_building = building_colony_shelter"
+
+
 def _pop_blocks(emp, prefix, idx, owner, species_tgt):
     pops = emp.get("colony_pop") or {}
     if not pops:
@@ -1977,15 +2099,12 @@ def _pop_blocks(emp, prefix, idx, owner, species_tgt):
 					}}
 					if = {{
 						limit = {{ exists = event_target:{owner} }}
-						create_colony = {{
-							owner = event_target:{owner}
-							species = event_target:{species_tgt}
-						}}
+{_colony_open(emp, owner, species_tgt)}
 						create_pop_group = {{
 							species = owner_main_species
 							size = 1400{_pop_ethos_line(emp.get("ethics"))}
 						}}
-						remove_building = building_colony_shelter
+{_colony_close(emp)}
 					}}
 				}}
 			}}"""
@@ -2002,15 +2121,12 @@ def _pop_blocks(emp, prefix, idx, owner, species_tgt):
 					}}
 					if = {{
 						limit = {{ exists = event_target:{owner} }}
-						create_colony = {{
-							owner = event_target:{owner}
-							species = event_target:{species_tgt}
-						}}
+{_colony_open(emp, owner, species_tgt)}
 						create_pop_group = {{
 							species = owner_main_species
 							size = {int(n)}{_pop_ethos_line(emp.get("ethics"))}
 						}}{rename}
-						remove_building = building_colony_shelter
+{_colony_close(emp)}
 					}}
 				}}
 			}}""")
@@ -2020,13 +2136,28 @@ def _pop_blocks(emp, prefix, idx, owner, species_tgt):
 def _fleet_block(emp, cap_flag, owner):
     mix = emp.get("fleet_mix") or {}
     fe_map = FE_SHIP_DESIGNS.get(_fe_key(emp), {}) if emp.get("type") == "fallen_empire" else {}
-    bits = []
+    # Frigates and titans have no guaranteed auto-design. Fold frigates into corvettes.
+    counts = {}
     for sz in FLEET_DESIGNS:
         if sz in _FLEET_BLOCK_SKIP:
             continue
-        n = mix.get(sz)
+        n = int(mix.get(sz) or 0)
         if not n:
             continue
+        if sz == "frigate":
+            counts["corvette"] = counts.get("corvette", 0) + n
+        elif sz in _HOME_FLEET_TECH:
+            counts[sz] = counts.get(sz, 0) + n
+    if not counts and emp.get("type") != "fallen_empire":
+        counts["corvette"] = 3
+    if not counts:
+        return ""
+    tech_lines = "\n".join(
+        f"							give_technology = {{ tech = {_HOME_FLEET_TECH[sz]} message = no }}"
+        for sz in counts
+    )
+    bits = []
+    for sz, n in counts.items():
         named = fe_map.get(sz)
         if named:
             ship = f'create_ship = {{ name = random design = "{named}" }}'
@@ -2036,19 +2167,14 @@ def _fleet_block(emp, cap_flag, owner):
 									count = {int(n)}
 									{ship}
 								}}""")
-    if not bits:
-        if emp.get("type") == "fallen_empire":
-            return ""
-        bits.append("""								while = {
-									count = 3
-									create_ship = { name = random random_existing_design = corvette }
-								}""")
     inner = "\n".join(bits)
     return f"""			if = {{
 				limit = {{ exists = event_target:{owner} }}
 				random_system = {{
 					limit = {{ has_star_flag = {cap_flag} }}
 					event_target:{owner} = {{
+{tech_lines}
+						refresh_auto_generated_ship_designs = yes
 						create_fleet = {{
 							name = continuum_home_fleet
 							settings = {{ spawn_debris = no }}
@@ -2334,6 +2460,7 @@ def _inject_event_effects(event_txt, extra):
 
 
 def write_intro_and_empire_events(events_dir, loc_entries, plan, empires, species, owned, capitals, trait_keys, civic_keys, ethic_keys, tech_keys=None, tech_pots=None):
+    spent_gov_nouns = set()
     import os
     emp_path = os.path.join(events_dir, "continuum_empire_events.txt")
     chunks = []
@@ -2456,9 +2583,25 @@ event = {
 					set_country_flag = continuum_pre_empire{prefix_line}
 {tech_lines}
 					add_resource = {{ energy = 1000 minerals = 1000 food = 1000 alloys = 500 influence = 200 }}
+ADV_GRANT
 				}}
 			}}
 """
+        adv_grant = ""
+        if cid in set(plan.get("aged_advanced_ids") or []):
+            food_or_energy = "energy = 1000" if (is_machine(emp, sp) or is_hive(emp, sp)) else "food = 1000"
+            goods_or_mins = "minerals = 500" if (is_machine(emp, sp) or is_hive(emp, sp)) else "consumer_goods = 500"
+            adv_grant = f"""
+					if = {{
+						limit = {{ has_global_flag = continuum_aged }}
+						give_technology = {{ tech = tech_mining_1 message = no }}
+						give_technology = {{ tech = tech_combat_computers_1 message = no }}
+						give_technology = {{ tech = tech_planetary_unification message = no }}
+						give_technology = {{ tech = tech_galactic_ambitions message = no }}
+						add_resource = {{ energy = 1000 minerals = 1000 alloys = 500 influence = 200 {food_or_energy} {goods_or_mins} }}
+						set_country_flag = continuum_advanced_remnant
+					}}"""
+        rem_chunk = rem_chunk.replace("ADV_GRANT", adv_grant)
         if cid in skip_aged:
             inner = "\n".join(("\t" + ln) if ln.strip() else ln for ln in rem_chunk.splitlines())
             rem_chunk = (
@@ -2665,7 +2808,8 @@ event = {
                 pad = ["civic_machine_builder", "civic_machine_replication"]
             civics = (list(civics) + pad)[:2]
         country_name = unique_successor_name(
-            sp_raw, authority, used_names, _spl_rng, place=place, sibling_index=sib
+            sp_raw, authority, used_names, _spl_rng, place=place, sibling_index=sib,
+            spent_nouns=spent_gov_nouns,
         )
         emp["name"] = country_name
         is_void = bool(emp.get("_void")) and authority not in ("auth_hive_mind", "auth_machine_intelligence")
@@ -2782,7 +2926,10 @@ event = {
 
     fallen = plan.get("fallen") or []
     fe_owned = plan.get("fallen_owned") or {}
+    sleeper_ids = {str(x) for x in (plan.get("sleeper_ids") or [])}
     for idx, emp in enumerate(fallen):
+        if str(emp["id"]) in sleeper_ids:
+            continue
         if not fe_owned.get(emp["id"]):
             continue
         sp = species.get(str(emp.get("founder_species"))) or {}
@@ -2955,6 +3102,8 @@ event = {
             prim_auth = "auth_machine_intelligence"
             ethics = ["ethic_gestalt_consciousness"]
             civics = ["civic_machine_builder", "civic_machine_replication"]
+        else:
+            ethics = legal_primitive_ethics(ethics, prim_auth)
         gfx = prim.get("graphical_culture") or "preindustrial_01"
         age = prim.get("pre_ftl_age")
         if not age:
@@ -2986,7 +3135,7 @@ event = {
         )
         ftl_name = unique_successor_name(
             species_display_name(sp, prim), ftl_auth, used_prim_names,
-            random.Random(idx + 91), sibling_index=0,
+            random.Random(idx + 91), sibling_index=0, spent_nouns=spent_gov_nouns,
         )
         ftl_name = script_name(ftl_name)
         chunks.append(f"""			every_system = {{
@@ -3030,13 +3179,9 @@ event = {
 							set_graphical_culture = {gfx}
 							set_country_flag = continuum_pre_primitive_ftl
 							save_global_event_target_as = continuum_prim_{idx}
+							give_technology = {{ tech = tech_starbase_1 message = no }}
+							refresh_auto_generated_ship_designs = yes
 							add_resource = {{ energy = 600 minerals = 600 food = 600 alloys = 200 influence = 100 }}
-						}}
-					}}
-					solar_system = {{
-						create_starbase = {{
-							size = starbase_outpost
-							owner = last_created_country
 						}}
 					}}
 				}}
@@ -3064,10 +3209,15 @@ event = {
 							save_global_event_target_as = continuum_prim_{idx}
 						}}
 					}}
+					set_owner = last_created_country
+					set_capital = yes
 				}}
-				create_colony = {{
-					owner = last_created_country
-					species = last_created_species
+				if = {{
+					limit = {{ solar_system = {{ has_star_flag = continuum_prim_ftl_{idx} }} }}
+					create_colony = {{
+						owner = last_created_country
+						species = last_created_species
+					}}
 				}}
 				create_pop_group = {{
 					species = owner_main_species
@@ -3082,6 +3232,8 @@ event = {
         age = np.get("age") or "iron_age"
         nlist = np.get("namelist") or "MAM1"
         pc = np.get("planet_class") or "pc_continental"
+        if "astral_scar" in str(pc) or not is_habitable_class(pc):
+            pc = "pc_continental"
         chunks.append(f"""			if = {{
 				limit = {{ has_global_flag = continuum_aged }}
 				every_system = {{
@@ -3120,10 +3272,8 @@ event = {
 								save_global_event_target_as = continuum_newprim_{nidx}
 							}}
 						}}
-						create_colony = {{
-							owner = last_created_country
-							species = last_created_species
-						}}
+						set_owner = last_created_country
+						set_capital = yes
 						create_pop_group = {{
 							species = owner_main_species
 							size = 1200
@@ -3171,6 +3321,7 @@ event = {
 			limit = {{
 				has_planet_flag = continuum_agefe_{aidx}_palace
 				exists = owner
+				owner = {{ is_country_type = fallen_empire }}
 			}}
 			add_building = {palace}
 			add_building = building_micro_forge
@@ -3179,7 +3330,9 @@ event = {
     if palace_fx:
         pop_txt = _inject_event_effects(pop_txt, "\n".join(palace_fx))
     chunks.append(pop_txt)
-    chunks.append(continuum_cp.emit_starbase_event(restored))
+    chunks.append(continuum_cp.emit_starbase_event(
+        restored, ftl_prims=len(plan.get("primitives") or [])
+    ))
     fleet_txt = continuum_cp.emit_fleet_event(restored, _fleet_block)
     fe_bits = []
     for r in restored:
@@ -3323,6 +3476,12 @@ def build_empire_plan(save_path, galaxy_data, stars, planets, argv_start=None):
     for cid, syss in list(owned.items()):
         cap = capitals.get(cid)
         owned[cid] = [s for s in syss if s not in blocked or s == cap]
+    for cid in sealed_home_country_ids(countries, capitals, galaxy_data):
+        name = next((c.get("name") for c in countries if c["id"] == cid), cid)
+        n_sys = len(owned.get(cid) or [])
+        print(f"Sealed cluster empire skipped: {name} ({n_sys} systems not restored)")
+        owned.pop(cid, None)
+        capitals.pop(cid, None)
     lanes = hyperlane_map(galaxy_data)
     tags, spawn_weights = classify_systems(owned, capitals, lanes, blocked, habitables, countries, species)
     defaults = [c for c in countries if c["type"] == "default" and owned.get(c["id"])]

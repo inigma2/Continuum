@@ -10,6 +10,9 @@ import json
 import datetime
 import continuum_empires
 import continuum_graves
+import continuum_ledger
+import continuum_sleeper
+import continuum_crisis
 
 # Conditional import for Windows-specific registry access
 if sys.platform == "win32":
@@ -17,7 +20,7 @@ if sys.platform == "win32":
 
 # --- CONFIGURATION ---
 SUPPORTED_STELLARIS_VERSION = "4.5"
-MOD_VERSION = "0.8.6"
+MOD_VERSION = "0.8.9"
 VANILLA_GALAXY_SHAPES = (
     "elliptical",
     "spiral_2",
@@ -616,6 +619,12 @@ def parse_block_content(block_text):
     if flags_block:
         data['flags'] = [line.strip().split('=')[0] for line in flags_block.split('\n') if line.strip()]
 
+    hull = re.search(r'continuum_hulls=([\d.]+)', block_text)
+    if not hull:
+        hull = re.search(r'key="continuum_hulls"\s*value=([\d.]+)', block_text)
+    if hull:
+        data['continuum_hulls'] = hull.group(1)
+
     deposits_block, _, _ = _get_nested_block_content(block_text, r'deposits\s*=\s*{')
     if deposits_block:
         data['deposit_ids'] = re.findall(r'\d+', deposits_block)
@@ -1009,7 +1018,21 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
 
             f.write(f"{initializer_name} = {{\n")
             f.write(f'\tname = "{sys_name}"\n\tclass = "{star_class}"\n')
-            is_empire_start = (str(sys_id) == str(start_system_id)) or (spawn_ids and str(sys_id) in spawn_ids)
+            has_home = False
+            root = system.get("hierarchy_root") or {}
+            for body in root.get("children") or []:
+                if continuum_empires.is_habitable_class(body.get("planet_class")):
+                    has_home = True
+                    break
+                for moon in body.get("children") or []:
+                    if continuum_empires.is_habitable_class(moon.get("planet_class")):
+                        has_home = True
+                        break
+                if has_home:
+                    break
+            is_empire_start = has_home and (
+                (str(sys_id) == str(start_system_id)) or (spawn_ids and str(sys_id) in spawn_ids)
+            )
             home_planet_written = False
             f.write('\tusage = empire_init\n\n' if is_empire_start else '\tusage = misc_system_init\n\n')
             
@@ -1221,7 +1244,7 @@ def write_initializer_file(systems_list, parsed_megastructures, start_system_id,
                             mega.get("type"), sys_id, extra_star_flags,
                             mega_keys=set(all_mega_definitions or ()),
                         )
-                        if not mega_type:
+                        if not mega_type or _mega_skips_vanilla_owner_effect(mega_type):
                             continue
                         param_dict = {'type': f'type = {mega_type}'}
                         if 'name' in mega:
@@ -1283,10 +1306,18 @@ def find_body_in_system(hierarchy_root, target_id):
             queue.extend(body['children'])
     return None
 
-def write_on_actions_file(output_path, has_wormholes, has_planet_megas, has_shroud_enclave, has_open_lgates=False, has_npcs=True, has_empires=False, has_graves=False):
+def write_on_actions_file(output_path, has_wormholes, has_planet_megas, has_shroud_enclave, has_open_lgates=False, has_npcs=True, has_empires=False, has_graves=False, has_ledger=False, has_sleeper=False, has_crisis=False, has_memorial=False):
     content = "# These should run after the static galaxy has been generated.\n\non_game_start = {\n\tevents = {\n"
     if has_graves:
-        content += "\t\tcontinuum_graves.0 # seed catastrophe anomalies on flagged worlds\n"
+        content += "\t\tcontinuum_graves.0 # seed catastrophe digs and study anomalies\n"
+    if has_ledger:
+        content += "\t\tcontinuum_ledger.0 # seed battle graveyards\n"
+    if has_sleeper:
+        content += "\t\tcontinuum_sleeper.0 # seed fallen precursor digs on aged\n"
+    if has_crisis:
+        content += "\t\tcontinuum_crisis.0 # seed proven crisis anomalies and digs\n"
+    if has_memorial:
+        content += "\t\tcontinuum_memorial.0 # seed digs for human empires Aged removed\n"
     if has_planet_megas:
         content += "\t\tcontinuum_megastructure.1 # spawn planet-bound megastructures\n"
     if has_open_lgates:
@@ -1322,57 +1353,42 @@ def write_on_actions_file(output_path, has_wormholes, has_planet_megas, has_shro
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(content)
 
-def write_vanilla_spawn_guards_file(output_path):
-    """Skip vanilla The Chosen cluster if Pre already has chosen_system / L-cluster."""
-    content = """namespace = ancrel
-# Replaces vanilla ancrel.12050 (on_game_start). Same weights, but the Chosen
-# branch is 0 if this galaxy already restored a chosen_system or lcluster1.
-event = {
-	id = ancrel.12050
-	is_triggered_only = yes
-	hide_window = yes
+def write_vanilla_spawn_guards_file(events_dir, install_dir):
+    """Block a second Chosen cluster when the map already has chosen_system.
 
-	immediate = {
-		random_list = {
-			2 = { }
-			1 = {
-				random_rim_system = {
-					limit = { is_mindwardens_story_system = no }
-					system_event = { id = ancrel.12055 }
-				}
-			}
-			1 = {
-				modifier = {
-					factor = 0
-					has_first_contact_dlc = no
-				}
-				modifier = {
-					factor = 0
-					is_difficulty = 0
-				}
-				modifier = {
-					factor = 0
-					num_ai_empires_setting = 0
-				}
-				modifier = {
-					factor = 0
-					any_system = { has_star_flag = chosen_system }
-				}
-				modifier = {
-					factor = 0
-					any_system = { has_star_flag = lcluster1 }
-				}
-				random_rim_system = {
-					limit = { is_mindwardens_story_system = no }
-					system_event = { id = fircon.3500 }
-				}
-			}
-		}
-	}
-}
-"""
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(content)
+    A second file that reuses ancrel.12050 is ignored. The game uses a mod file
+    at the vanilla path instead, with one extra weight modifier in that event.
+    """
+    src = os.path.join(install_dir or "", "events", "ancient_relics_arcsite_events_2.txt")
+    dst = os.path.join(events_dir, "ancient_relics_arcsite_events_2.txt")
+    if not os.path.isfile(src):
+        print("Chosen guard: vanilla event file not found. A second Chosen cluster can still roll.")
+        return
+    with open(src, encoding="utf-8") as fh:
+        text = fh.read()
+    fir = text.find("id = fircon.3500")
+    idx = text.rfind("num_ai_empires_setting = 0", 0, fir if fir > 0 else len(text))
+    if fir < 0 or idx < 0 or fir - idx > 500:
+        print("Chosen guard: Chosen branch not found. A second cluster can still roll.")
+        return
+    if "has_star_flag = chosen_system" in text[idx:fir]:
+        patched = text
+    else:
+        brace = text.find("}", idx)
+        nl = text.find("\n", brace)
+        line_start = text.rfind("\n", 0, idx) + 1
+        inner = text[line_start:idx]
+        outer = inner[:-1] if inner.endswith("\t") else inner
+        block = (
+            f"{outer}modifier = {{\n"
+            f"{inner}factor = 0\n"
+            f"{inner}any_system = {{ has_star_flag = chosen_system }}\n"
+            f"{outer}}}\n"
+        )
+        patched = text[: nl + 1] + block + text[nl + 1 :]
+    with open(dst, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(patched)
+    print("Chosen guard: no second cluster when chosen_system is already on the map.")
 
 
 def write_lgate_events_file(output_path):
@@ -2157,6 +2173,16 @@ event = {{
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(content)
 
+def _mega_skips_vanilla_owner_effect(mega_type):
+    """These vanilla types fire a fleet or country effect with an empty owner."""
+    t = str(mega_type or "")
+    return (
+        t.startswith("hyper_relay")
+        or "arc_furnace" in t
+        or "grand_archive" in t
+    )
+
+
 def write_megastructure_events_file(output_path, planet_megas, mega_keys=None):
     if not planet_megas: return
 
@@ -2165,7 +2191,7 @@ def write_megastructure_events_file(output_path, planet_megas, mega_keys=None):
     for mega in planet_megas:
         mega_type = mega.get("type")
         mega_gfx = mega.get("graphical_culture", "none")
-        if not mega_type:
+        if not mega_type or _mega_skips_vanilla_owner_effect(mega_type):
             continue
         unique_megas.add((mega_type, mega_gfx))
         ruined = _mega_ruin_target(mega_type, keys)
@@ -2391,7 +2417,7 @@ def main():
     save_game_dir = os.path.join(stellaris_user_dir, 'save games')
     if not os.path.isdir(save_game_dir):
         print(f"FATAL ERROR: Save game directory not found at '{save_game_dir}'"); input("Press Enter to exit."); return
-    
+
     all_saves = []
     for root, _, files in os.walk(save_game_dir):
         relative_dir_path = os.path.relpath(root, save_game_dir)
@@ -2474,7 +2500,6 @@ def main():
                 print(f"Removed: {os.path.relpath(d, script_dir)}")
             except OSError as e:
                 print(f"Error removing directory {d} : {e.strerror}")
-
     print("Creating new directory structure...")
     output_map_dir = os.path.join(script_dir, "map", "setup_scenarios")
     output_init_dir = os.path.join(script_dir, "common", "solar_system_initializers")
@@ -2538,9 +2563,19 @@ def main():
         print(f"Spawn-weight systems: {len(empire_plan.get('spawn_ids') or [])}")
         print(f"Present crisis in save: {bool(empire_plan.get('had_crisis'))}")
         graves = continuum_graves.classify_graves(galaxy_data)
+        continuum_graves.attach_dispatch(galaxy_data, graves, save_file_path)
         empire_plan["planet_flags"] = continuum_graves.apply_grave_flags(
             graves, empire_plan.get("planet_flags")
         )
+        recorded = continuum_ledger.battles_from_galaxy(
+            galaxy_data, empire_plan.get("countries") or empire_plan.get("empires")
+        )
+        battles = continuum_ledger.top_battles(recorded)
+        continuum_ledger.attach_leader_names(save_file_path, battles)
+        empire_plan["extra_flags"] = continuum_ledger.apply_battle_flags(
+            battles, empire_plan.get("extra_flags")
+        )
+        print(f"Battle graveyards: {len(battles)}")
         import continuum_fauna
         fauna_snap = continuum_fauna.parse_fauna_snapshot(save_file_path)
         for sid in fauna_snap.get("systems") or []:
@@ -2593,11 +2628,23 @@ def main():
             print("  rim wormholes: none")
         aged_wormholes = list(wormhole_pairs) + list(lane_stats.get("wormholes") or [])
         sever = continuum_aged.sever_empires(empire_plan, aged_galaxy)
+        continuum_sleeper.bind(empire_plan, aged_galaxy)
         empire_plan["aged_sever"] = sever
         empire_plan["aged_splinters"] = list(sever.get("splinters") or []) + list(sever.get("fe_ftl") or [])
         aged_owner_flags, aged_planet_flags, aged_spawn = continuum_aged.apply_aged_flags(empire_plan, sever)
+        aged_owner_flags = continuum_ledger.apply_battle_flags(battles, aged_owner_flags)
+        continuum_sleeper.stamp(empire_plan, aged_owner_flags, aged_planet_flags)
+        import continuum_memorial
+        memorials = continuum_memorial.plan(empire_plan, aged_galaxy, battles)
+        crisis_sites = continuum_crisis.plan_sites(save_file_path, galaxy_data)
+        continuum_crisis.stamp(crisis_sites, empire_plan.get("planet_flags") or {})
+        continuum_crisis.stamp(crisis_sites, aged_planet_flags)
+        print(f"Sleepers: {len(empire_plan.get('sleeper_ids') or [])}")
+        print(f"Crisis sites: {len(crisis_sites)}")
+        print(f"Aged advanced: {len(empire_plan.get('aged_advanced_ids') or [])}")
         present_flags = _galaxy_flags(empire_plan.get("extra_flags"), galaxy_data, "continuum_galaxy", "continuum_present")
         aged_flags = _galaxy_flags(aged_owner_flags, aged_galaxy, "continuum_galaxy", "continuum_aged")
+        continuum_memorial.stamp(memorials, aged_planet_flags, aged_flags)
         write_map_file(galaxy_data, parsed_nebulas, wormhole_pairs, output_map_file, localization, spawn_ids=empire_plan.get("spawn_ids"), spawn_weights=empire_plan.get("spawn_weights"), scenario_name="continuum", init_prefix="continuum_system_init", galaxy_star_flags=["continuum_galaxy", "continuum_present"])
         write_initializer_file(galaxy_data, parsed_megastructures, start_system_id, output_initializer_file, all_mega_definitions, shroud_data, deposit_keys, modifier_keys, spawn_ids=empire_plan.get("spawn_ids"), extra_star_flags=present_flags, devastation_system=empire_plan.get("devastation_system"), extra_planet_flags=empire_plan.get("planet_flags"), init_prefix="continuum_system_init")
         aged_spawn_ids = empire_plan.get("aged_spawn_ids") or empire_plan.get("spawn_ids")
@@ -2605,6 +2652,10 @@ def main():
         write_initializer_file(aged_galaxy, parsed_megastructures, start_system_id, output_aged_init_file, all_mega_definitions, shroud_data, deposit_keys, modifier_keys, spawn_ids=aged_spawn_ids, extra_star_flags=aged_flags, devastation_system=empire_plan.get("devastation_system"), extra_planet_flags=aged_planet_flags, init_prefix="continuum_aged_init")
         loc_extra = {}
         continuum_graves.write_grave_files(script_dir, loc_extra, graves)
+        continuum_ledger.write_ledger_files(script_dir, loc_extra, battles)
+        continuum_sleeper.write_files(script_dir, loc_extra, empire_plan)
+        continuum_crisis.write_files(script_dir, loc_extra, crisis_sites)
+        continuum_memorial.write_files(script_dir, loc_extra, memorials)
         trait_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/traits'))
         civic_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/governments/civics'))
         ethic_keys = parse_script_keys(find_mod_and_game_files(stellaris_install_dir, stellaris_user_dir, 'common/ethics'))
@@ -2630,7 +2681,7 @@ def main():
         write_scripted_effects_file(output_wormhole_effects_file, n_wh)
         if has_shroud_data:
             write_shroud_tunnel_events_file(os.path.join(output_events_dir, "continuum_shroud_events.txt"))
-        write_vanilla_spawn_guards_file(os.path.join(output_events_dir, "continuum_vanilla_guards.txt"))
+        write_vanilla_spawn_guards_file(output_events_dir, stellaris_install_dir)
         if has_open_lgates:
             write_lgate_events_file(os.path.join(output_events_dir, "continuum_lgate_events.txt"))
         write_npc_effects_file(os.path.join(output_effects_dir, "continuum_npc_effects.txt"))
@@ -2646,7 +2697,11 @@ def main():
                               has_open_lgates=has_open_lgates,
                               has_npcs=True,
                               has_empires=bool(empire_plan.get("empires")),
-                              has_graves=True)
+                              has_graves=True,
+                              has_ledger=True,
+                              has_sleeper=bool(empire_plan.get("sleeper_ids")),
+                              has_crisis=bool(crisis_sites),
+                              has_memorial=bool(memorials))
         
         print("\n--- PARSING COMPLETE ---")
         print(f"Found {system_count} systems, {counts['nebula']} nebulas, {counts['star']} stars, {counts['planet']} planets, {counts['moon']} moons, and {counts['asteroid']} asteroids.")

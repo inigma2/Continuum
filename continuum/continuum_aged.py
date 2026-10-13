@@ -53,23 +53,23 @@ def _smoothstep(t):
 
 
 def spin_degrees(frac):
-    """Inner 145–210°, mid 30–60°, outer 10–33°. Smooth blend, no hard rings."""
+    """Clockwise shear by band. Inner 40° to 30°, mid 15° to 10°, outer 5° to 0°.
+
+    The requested ranges do not overlap, so the angle steps at the band edges
+    instead of blending through a spiral. Inside a band it eases from the
+    inner edge of that band toward the outer edge.
+    """
     f = min(max(frac, 0.0), 1.0)
-    knots = (
-        (0.00, 208.0),
-        (0.30, 152.0),
-        (0.37, 58.0),
-        (0.62, 38.0),
-        (0.82, 22.0),
-        (1.00, 11.0),
-    )
-    for i in range(len(knots) - 1):
-        f0, a0 = knots[i]
-        f1, a1 = knots[i + 1]
-        if f <= f1:
-            t = _smoothstep((f - f0) / (f1 - f0) if f1 > f0 else 1.0)
-            return a0 + (a1 - a0) * t
-    return knots[-1][1]
+    if f < INNER_FRAC:
+        t = _smoothstep(f / INNER_FRAC)
+        return 40.0 + (30.0 - 40.0) * t
+    if f < OUTER_FRAC:
+        span = OUTER_FRAC - INNER_FRAC
+        t = _smoothstep((f - INNER_FRAC) / span if span else 1.0)
+        return 15.0 + (10.0 - 15.0) * t
+    span = 1.0 - OUTER_FRAC
+    t = _smoothstep((f - OUTER_FRAC) / span if span else 1.0)
+    return 5.0 + (0.0 - 5.0) * t
 
 
 def _apply_spin(x, y, cx, cy, rmax, years=None):
@@ -106,14 +106,8 @@ def _dist(a, b):
 
 def _is_sealed_system(sys):
     """Off-map clusters: L-cluster, Chosen, Formless (no hyperlanes in vanilla)."""
-    for fl in sys.get("flags") or []:
-        s = str(fl)
-        if s in (
-            "lcluster", "lcluster1", "lcluster_lgate", "terminal_egress",
-            "chosen_system", "formless_system",
-        ) or s.startswith("lcluster"):
-            return True
-    return False
+    import continuum_empires as ce
+    return ce.is_sealed_system(sys)
 
 
 def _is_unstable_star(sys):
@@ -802,6 +796,71 @@ def _weed_defaults(defaults, bled, rng):
     return keep, preserve, extinct
 
 
+def _apply_sleepers(plan, aged_galaxy, fe_remnant, fe_ftl, fallow, keep_fallow, adj, spawn):
+    """1 or 2 Pre Fallens become unowned precursor cores. New agefe Fallens are not eligible."""
+    sys_by_id = {str(s.get("id")): s for s in aged_galaxy}
+    fe_caps = {cid: str(cap) for cid, cap in (plan.get("fallen_capitals") or {}).items() if cap is not None}
+    pool = []
+    for fe in plan.get("fallen") or []:
+        cid = fe["id"]
+        core = [str(s) for s in (fe_remnant.get(cid) or [])]
+        if not core:
+            continue
+        if any(_is_sealed_system(sys_by_id[s]) for s in core if s in sys_by_id):
+            continue
+        cap = fe_caps.get(cid) or core[0]
+        if str(cap) in spawn:
+            continue
+        pool.append((len(core), cid, core, str(cap), fe))
+    pool.sort(key=lambda row: (-row[0], row[1]))
+    chosen = []
+    if pool:
+        chosen.append(pool[0])
+        if len(pool) > 1:
+            core1 = set(pool[0][2])
+            other = pool[1]
+            touch = any(str(n) in core1 for s in other[2] for n in adj.get(s, ()))
+            near_spawn = any(
+                str(n) in spawn or s in spawn
+                for s in other[2]
+                for n in list(adj.get(s, ())) + list(adj.get(s, ()))
+            )
+            # 2-hop: neighbor of core is a spawn, or a neighbor of a neighbor.
+            hop2 = False
+            frontier = set()
+            for s in other[2]:
+                frontier.update(str(n) for n in adj.get(s, ()))
+            ring2 = set()
+            for s in frontier:
+                ring2.update(str(n) for n in adj.get(s, ()))
+            if spawn & (set(other[2]) | frontier | ring2):
+                hop2 = True
+            if not touch and not hop2 and not near_spawn:
+                chosen.append(other)
+    plan["sleeper_ids"] = [c[1] for c in chosen]
+    plan["sleeper_cores"] = {c[1]: c[2] for c in chosen}
+    plan["sleeper_home"] = {c[1]: c[3] for c in chosen}
+    plan["sleeper_emps"] = {c[1]: c[4] for c in chosen}
+    cores = set()
+    for _n, cid, core, _cap, fe in chosen:
+        fe_remnant[cid] = []
+        cores.update(core)
+        for sid in core:
+            fallow.add(sid)
+            keep_fallow.add(sid)
+            spawn.discard(sid)
+        print(f"Sleeper: {fe.get('name')} core {len(core)}")
+    if not chosen:
+        print("Sleepers: none")
+    kept = []
+    for spl in fe_ftl:
+        owned = {str(s) for s in (spl.get("starbases") or {})}
+        if owned & cores:
+            continue
+        kept.append(spl)
+    return kept
+
+
 def sever_empires(plan, aged_galaxy):
     """Split Pre default/FE ownership on the Aged hyperlane graph."""
     rng = random.Random(int(AGED_YEARS) + 61)
@@ -1151,6 +1210,12 @@ def sever_empires(plan, aged_galaxy):
             f"core {len(core)} surplus {len(surplus)}"
         )
     plan["aged_fallen_ids"] = picks
+    adv_pool = [cid for _n, cid in living if cid not in picks]
+    rng.shuffle(adv_pool)
+    n_adv = 0 if not adv_pool else (1 if len(adv_pool) == 1 else rng.choice([1, 2]))
+    plan["aged_advanced_ids"] = adv_pool[:n_adv]
+    for cid in plan["aged_advanced_ids"]:
+        print(f"Aged advanced: {emp_by_id.get(cid, {}).get('name')}")
 
     target_frac = rng.uniform(0.24, 0.34)
     target_n = int(round(target_frac * n_sys))
@@ -1411,7 +1476,7 @@ def sever_empires(plan, aged_galaxy):
             occupied.add(str(p["system_id"]))
     blocked = (
         "guardians_", "lcluster", "marauder", "shroud", "enclave", "lgate",
-        "terminal_egress", "wenkwort", "tiyanki", "void3", "crisis",
+        "terminal_egress", "chosen", "formless", "wenkwort", "tiyanki", "void3", "crisis",
     )
     cands = []
     for s in aged_galaxy:
@@ -1453,6 +1518,7 @@ def sever_empires(plan, aged_galaxy):
         fallow.discard(sid)
     plan["aged_new_prims"] = new_prims
     print(f"Aged new pre-FTLs {len(new_prims)}")
+    fe_ftl = _apply_sleepers(plan, aged_galaxy, fe_remnant, fe_ftl, fallow, keep_fallow, adj, spawn)
 
     return {
         "remnant": remnant,

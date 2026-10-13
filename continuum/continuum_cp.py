@@ -18,6 +18,69 @@ HABITABLE_CLASS_MARKERS = (
     "ecumenopolis",
 )
 GESTALT_AUTHS = frozenset({"auth_hive_mind", "auth_machine_intelligence"})
+_STARBASE_SLOTS = {
+    "starbase_outpost": (0, 0),
+    "starbase_starport": (2, 1),
+    "starbase_starhold": (4, 1),
+    "starbase_starfortress": (6, 2),
+    "starbase_citadel": (6, 4),
+    "starbase_marauder": (2, 1),
+}
+_SAFE_SHIP_SIZES = frozenset({
+    "corvette", "destroyer", "cruiser", "battleship",
+    "science", "constructor", "colonizer", "transport", "frigate",
+})
+_SKIP_BUILDING_BITS = (
+    "primitive_", "habitat_", "betharian", "resource_silo", "storm_relief",
+    "luxury", "commercial_zone", "temple", "crystal_", "hive_capital",
+    "hive_major", "system_capital", "ancient_palace", "micro_forge",
+    "reassembled_ship_shelter", "vault", "slave_", "thrall",
+    "urban_dwellings", "stone_palace", "hive_crude", "storm_resistant",
+    "mineral_purification",
+)
+
+
+_FE_SHIP_SIZE = {
+    "corvette": "small_ship_fallen_empire",
+    "frigate": "small_ship_fallen_empire",
+    "destroyer": "small_ship_fallen_empire",
+    "cruiser": "large_ship_fallen_empire",
+    "battleship": "large_ship_fallen_empire",
+    "titan": "massive_ship_fallen_empire",
+}
+_FE_SHIP_SIZES = frozenset(_FE_SHIP_SIZE.values())
+_OK_STARBASE_MODULES = frozenset({
+    "starbase_shipyard", "starbase_anchorage", "starbase_trading_hub",
+})
+# Auto-designs appear only after these techs. Frigates key off torpedoes.
+_HULL_TECH = {
+    "corvette": ("tech_corvettes",),
+    "destroyer": ("tech_corvettes", "tech_destroyers"),
+    "cruiser": ("tech_corvettes", "tech_destroyers", "tech_cruisers"),
+    "battleship": ("tech_corvettes", "tech_destroyers", "tech_cruisers", "tech_battleships"),
+    "frigate": ("tech_corvettes", "tech_torpedoes_1"),
+}
+
+
+def _hull_clause(size, named, fallen=False):
+    """A create_ship hull the game will accept, or None to skip it."""
+    if named and str(named).startswith("NAME_"):
+        return f'design = "{named}"'
+    if fallen:
+        size = _FE_SHIP_SIZE.get(size, size)
+        if size in _FE_SHIP_SIZES:
+            return f"random_existing_design = {size}"
+        return None
+    if size in _SAFE_SHIP_SIZES:
+        return f"random_existing_design = {size}"
+    return None
+
+
+def _building_ok(bld):
+    s = str(bld or "")
+    if not s or s.startswith("building_fe_"):
+        return False
+    return not any(bit in s for bit in _SKIP_BUILDING_BITS)
 SKIP_MEGA_TYPES = frozenset({
     "lgate_base", "gateway_ruined", "dyson_sphere_ruined",
     "spy_orb_ruined", "interstellar_assembly_ruined", "orbital_ring_ruined",
@@ -1213,10 +1276,31 @@ def emit_pop_event(restored):
     return wrap_event("continuum_empire.2", "continuum_emp_pops_done", "\n".join(parts) + ("\n" if parts else ""))
 
 
-def emit_starbase_event(restored):
+def emit_starbase_event(restored, ftl_prims=0):
     parts = []
     for r in restored:
         parts.append(r["sb_txt"])
+    # FTL pre-FTLs are created in empire.1. Their outpost waits until this
+    # later event so the auto starbase design exists. Passing a ship design
+    # is illegal: starbase_outpost is not designable.
+    for idx in range(int(ftl_prims or 0)):
+        parts.append(f"""			if = {{
+				limit = {{ exists = event_target:continuum_prim_{idx} }}
+				every_system = {{
+					limit = {{
+						has_star_flag = continuum_prim_ftl_{idx}
+						NOT = {{ exists = starbase }}
+					}}
+					event_target:continuum_prim_{idx} = {{
+						give_technology = {{ tech = tech_starbase_1 message = no }}
+						refresh_auto_generated_ship_designs = yes
+					}}
+					create_starbase = {{
+						size = starbase_outpost
+						owner = event_target:continuum_prim_{idx}
+					}}
+				}}
+			}}""")
     return wrap_event("continuum_empire.3", "continuum_emp_starbases_done", "\n".join(parts) + ("\n" if parts else ""))
 
 
@@ -1251,10 +1335,20 @@ def _named_fleet_block(emp, cap_flag, owner, prefix=None, idx=None):
         for chunk_i in range(0, len(ships_all), 40):
             ships = ships_all[chunk_i:chunk_i + 40]
             creates = []
+            techs = []
+            seen_tech = set()
             for sh in ships:
                 sz = sh.get("size") or "corvette"
                 named = fe_map.get(sz)
-                hull = f'design = "{named}"' if named else f"random_existing_design = {sz}"
+                fallen_hull = emp.get("type") == "fallen_empire"
+                hull = _hull_clause(sz, named, fallen=fallen_hull)
+                if not hull:
+                    continue
+                if not fallen_hull and "random_existing_design" in hull:
+                    for tech in _HULL_TECH.get(sz, ()):
+                        if tech not in seen_tech:
+                            seen_tech.add(tech)
+                            techs.append(tech)
                 nm = sh.get("name")
                 if nm and _is_format_name(nm):
                     nm = None
@@ -1271,11 +1365,19 @@ def _named_fleet_block(emp, cap_flag, owner, prefix=None, idx=None):
                     "								}"
                 )
             inner = "\n".join(creates)
+            if not inner:
+                continue
+            tech_lines = "\n".join(
+                f"						give_technology = {{ tech = {tech} message = no }}"
+                for tech in techs
+            )
             fleets.append(f"""			if = {{
 				limit = {{ exists = event_target:{owner} }}
 				random_system = {{
 					limit = {{ has_star_flag = {sys_flag} }}
 					event_target:{owner} = {{
+{tech_lines}
+						refresh_auto_generated_ship_designs = yes
 						create_fleet = {{
 							{nline}
 							settings = {{ spawn_debris = no }}
@@ -1381,38 +1483,6 @@ def emit_station_event(restored):
 					}}
 				}}
 			}}""")
-        plats = r["emp"].get("defense_platforms") or {}
-        if plats:
-            parts.append(f"""			if = {{
-				limit = {{ exists = event_target:{owner} }}
-				event_target:{owner} = {{
-					give_technology = {{ tech = tech_space_defense_station_1 message = no }}
-					refresh_auto_generated_ship_designs = yes
-				}}
-			}}""")
-        for sid, n in plats.items():
-            n = int(n)
-            if n < 1:
-                continue
-            parts.append(f"""			if = {{
-				limit = {{ exists = event_target:{owner} }}
-				random_system = {{
-					limit = {{ has_star_flag = {prefix}_{idx}_s{sid} }}
-					event_target:{owner} = {{
-						create_fleet = {{
-							settings = {{ spawn_debris = no }}
-							effect = {{
-								set_owner = prev
-								while = {{
-									count = {n}
-									create_ship = {{ name = random random_existing_design = military_station_small }}
-								}}
-								set_location = prevprev
-							}}
-						}}
-					}}
-				}}
-			}}""")
     return wrap_event("continuum_empire.5", "continuum_emp_stations_done", "\n".join(parts) + ("\n" if parts else ""))
 
 
@@ -1424,11 +1494,18 @@ def emit_module_mega_event(restored):
         idx = r["idx"]
         emp = r["emp"]
         for sid, fit in (emp.get("sb_fit") or {}).items():
+            size = (emp.get("starbases") or {}).get(str(sid))
+            mod_cap, _bld_cap = _STARBASE_SLOTS.get(size, (2, 1))
+            # A created starbase is often smaller than the Pre fit, and many
+            # modules fail their potential. Two basic modules, no buildings.
+            mod_cap = min(mod_cap, 2)
             mods = []
-            for slot, mod in sorted((fit.get("modules") or {}).items()):
-                mods.append(f"					set_starbase_module = {{ slot = {int(slot) + 1} module = {mod} }}")
-            for slot, bld in sorted((fit.get("buildings") or {}).items()):
-                mods.append(f"					set_starbase_building = {{ slot = {int(slot) + 1} building = {bld} }}")
+            slot_n = 0
+            for _slot, mod in sorted((fit.get("modules") or {}).items()):
+                if mod not in _OK_STARBASE_MODULES or slot_n >= mod_cap:
+                    continue
+                slot_n += 1
+                mods.append(f"					set_starbase_module = {{ slot = {slot_n} module = {mod} }}")
             if not mods:
                 continue
             inner = "\n".join(mods)
@@ -1470,26 +1547,14 @@ def emit_leader_event(restored):
             "					unlock_council_slots = 3",
         ]
         seated = set()
-        auth = str(emp.get("authority") or "")
-        if auth in ("auth_hive_mind", "auth_machine_intelligence"):
-            for seat in (
-                "councilor_gestalt_growth",
-                "councilor_gestalt_cognitive",
-                "councilor_gestalt_legion",
-                "councilor_gestalt_regulatory",
-            ):
-                creates.append(f"					set_council_position_to_council = {seat}")
-        else:
-            for seat in ("councilor_defense", "councilor_research", "councilor_state"):
-                creates.append(f"					set_council_position_to_council = {seat}")
         for n, ld in enumerate(leads):
             valid = [
                 t for t in (ld.get("traits") or [])
                 if t and re.match(r"^[A-Za-z][A-Za-z0-9_]*$", t)
             ]
-            at_create = [t for t in valid if not _is_councilor_trait(t)]
-            deferred = [t for t in valid if _is_councilor_trait(t)]
-            trait_block = ("\n						traits = { " + " ".join(f"trait = {t}" for t in at_create) + " }") if at_create else ""
+            # 4.5 marks many leader_trait_* entries as councilor traits.
+            # Adding them logs councilor_trait_not_allowed.
+            trait_block = ""
             nm = "random" if not ld.get("name") else _script_token(ld["name"])
             gender = ld.get("gender")
             gender_line = ""
@@ -1544,26 +1609,8 @@ def emit_leader_event(restored):
 						}}
 						assign_leader = event_target:{tgt}
 					}}""")
-            seat = None
-            if role == "councilor":
-                seat = _council_seat(emp, ld)
-                if seat in seated:
-                    seat = None
-            elif emp.get("type") == "fallen_empire" and role == "admiral":
-                seat = _council_seat(emp, ld)
-            if seat:
-                seated.add(seat)
-                creates.append(f"""					event_target:{tgt} = {{
-						set_council_position = {seat}
-					}}""")
-            if deferred and (role == "ruler" or seat):
-                adds = "\n".join(
-                    f"						add_trait = {{ trait = {t} show_message = no }}"
-                    for t in deferred
-                )
-                creates.append(f"""					event_target:{tgt} = {{
-{adds}
-					}}""")
+            # Council seats and councilor traits are authority-gated in 4.5.
+            # Assigning them from the Pre save is what the error log rejects.
         inner = "\n".join(creates)
         parts.append(f"""			if = {{
 				limit = {{ exists = event_target:{owner} }}
@@ -1662,7 +1709,9 @@ def emit_layout_event(restored):
                         f"					add_zone = {{ district = {dt} zone = {z['type']} zone_slot = {zi} replace = yes }}"
                     )
                     for bld in z.get("buildings") or []:
-                        if bld in ("building_colony_shelter", "building_colony_shelter_machine", "building_colony_shelter_hive"):
+                        if not _building_ok(bld):
+                            continue
+                        if bld in ("building_colony_shelter", "building_colony_shelter_machine", "building_colony_shelter_hive", "building_capital", "building_major_capital"):
                             continue
                         if bld == "building_holo_theatres" and gestalt:
                             continue
@@ -1690,14 +1739,23 @@ def emit_layout_event(restored):
             else:
                 lines.append("					validate_and_repair_planet_buildings_and_districts = yes")
             inner = "\n".join(lines)
-            parts.append(f"""			every_galaxy_planet = {{
+            # FTL primitives are normal empires. Stone-age buildings are illegal on them.
+            prim_gate = ""
+            if prefix == "continuum_prim":
+                prim_gate = f"\n\t\t\t\tevent_target:{owner} = {{ is_country_type = primitive }}"
+            parts.append(f"""			if = {{
 				limit = {{
-					has_planet_flag = {prefix}_{idx}_c{i}
-					is_colony = yes
-					exists = owner
-					is_owned_by = event_target:{owner}
+					exists = event_target:{owner}{prim_gate}
 				}}
+				every_galaxy_planet = {{
+					limit = {{
+						has_planet_flag = {prefix}_{idx}_c{i}
+						is_colony = yes
+						exists = owner
+						is_owned_by = event_target:{owner}
+					}}
 {inner}
+				}}
 			}}""")
     return wrap_event("continuum_empire.10", "continuum_emp_layouts_done", "\n".join(parts) + ("\n" if parts else ""))
 
@@ -1752,14 +1810,17 @@ def emit_army_event(restored, eid="continuum_empire.11", flag="continuum_emp_arm
             if not creates:
                 continue
             inner = "\n".join(creates)
-            parts.append(f"""			every_galaxy_planet = {{
-				limit = {{
-					has_planet_flag = {prefix}_{idx}_c{ci}
-					is_colony = yes
-					exists = owner
-					is_owned_by = event_target:{owner}
-				}}
+            parts.append(f"""			if = {{
+				limit = {{ exists = event_target:{owner} }}
+				every_galaxy_planet = {{
+					limit = {{
+						has_planet_flag = {prefix}_{idx}_c{ci}
+						is_colony = yes
+						exists = owner
+						is_owned_by = event_target:{owner}
+					}}
 {inner}
+				}}
 			}}""")
         if include_embarked:
             cap_flag = r.get("cap_flag") or f"{prefix}_{idx}_capital"

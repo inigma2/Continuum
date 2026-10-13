@@ -155,11 +155,11 @@ def _set_shared_loc(loc_entries):
     )
     loc_entries["continuum_intro_crisis"] = _welcome(
         "Only a few years have passed since the crisis that scarred this galaxy. "
-        "The old empires that survived still hold their cores. You are a new polity in the wreckage."
+        "The old empires that survived still hold their cores. You are a new empire in the wreckage."
     )
     loc_entries["continuum_intro_copy"] = _welcome(
         "Another empire already uses this government. They still hold their space. "
-        "You are a new polity under the same banner - not their heir. You keep your name."
+        "You are a new empire under the same banner - not their heir. You keep your name."
     )
     loc_entries["continuum_intro_aged"] = _welcome(
         "It has been thousands of years since the oldest maps of them were drawn by the ancients of your people. "
@@ -187,7 +187,7 @@ def _copy_cases(restored, loc_entries):
         loc_entries[old_key] = f"Old {pretty}"
         loc_key = f"continuum_intro_copy_{idx}"
         loc_entries[loc_key] = _welcome(
-            f"The {pretty} still holds its space. You rise as a new polity under the same banner - "
+            f"The {pretty} still holds its space. You rise as a new empire under the same banner - "
             "not their heir. You keep your name."
         )
         leader_locs = []

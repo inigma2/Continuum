@@ -4,9 +4,29 @@ A Stellaris galaxy converter — one galaxy to rule them all.
 
 Turn a finished (or mid-game) save into a playable **static galaxy** for a new game. The Python parser reads your `.sav` and writes the imported galaxy into the Continuum mod folder.
 
-- **Current:** 0.8.6 for Stellaris **4.5.*** (Cygnus) — **Continuum Present** and **Continuum Aged**
+- **Current:** 0.8.9 for Stellaris **4.5.*** (Cygnus) — **Continuum Present** and **Continuum Aged**
 - Workshop: https://steamcommunity.com/sharedfiles/filedetails/?id=3554276594
 - Roadmap: https://steamcommunity.com/workshop/filedetails/discussion/3554276594/596284386694022138/
+
+## 0.8.9
+
+Stellaris **4.5.*** (Cygnus). One parse, two Galaxy Sizes. Date stays 2200. You are a new empire.
+
+**Aged advanced remnants:** one or two living Pre empires keep a normal realm and receive the four vanilla advanced-start technologies plus the matching stockpile.
+
+**Sleepers:** one or two Pre Fallen cores are not restored as countries. Their capital carries a precursor dig. The first chain can grant one relic if Ancient Relics is enabled.
+
+**Crisis finds:** an anomaly or a dig appears only when the save proves that crisis.
+
+**Battle ledger:** large battles are recorded in the save. Present and Aged place a graveyard anomaly on the star. Finishing it leaves a derelict wreck. A short project grants one salvage hull.
+
+**Your old empire:** if the Aged weed removes a human empire, its capital keeps a Last Transponder dig. If a new pre-FTL settled that world, the find is an anomaly on the star instead.
+
+**Map:** clockwise drift is smaller (inner about 30 to 40 degrees, mid 10 to 15, outer 0 to 5). Astral scars are not homeworlds. Sealed-cluster empires such as The Chosen are not restored as normal empires. Successor states do not all share one government noun.
+
+## 0.8.7
+
+Battle ledger lives in the save. The galaxy keeps its five largest battles, and each empire keeps its own largest. Graveyard anomalies use those records. No sidecar file.
 
 ## 0.8.6
 
