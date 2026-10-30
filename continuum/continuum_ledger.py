@@ -200,9 +200,9 @@ def _battle_desc(row, aged=False):
         if aged:
             return (
                 "Old charts call this stretch of dark a graveyard. Our scientists cannot name the two navies, "
-                "but the wrecks still lie in two lines, and the metal assays as hull rather than ore. "
-                "Whoever fought here left the dead ships where they fell.\\n\\n"
-                "We have taken a salvage from the field. The rest of the graveyard remains, drifting, "
+                "but the wrecks still lie in two lines, and the metal scans as military hull armor rather than raw asteroid ore. "
+                "Whoever fought here abandoned the dead ships where they fell.\\n\\n"
+                "We have extracted a salvage from the field. The rest of the graveyard remains drifting "
                 "for the next ship that bothers to look."
             )
         return (
@@ -233,19 +233,19 @@ def _battle_desc(row, aged=False):
         if goals:
             goal_bit = ", and they record the goal of the fight as " + goals[0]
         return (
-            f"Old charts still name the fleets that died in this dark as {who}{goal_bit}.{command} "
-            "Our scientists can still tell the wrecks apart by hull alloy, and the lines they hold "
+            f"Our oldest charts still name the fleets that died in this dark as {who}{goal_bit}.{command} "
+            "Our scientists can still tell the wrecks apart by the alloy of their hulls, and the lines they hold "
             "are the lines of a battle rather than a scrap yard.\\n\\n"
             "We have taken a salvage from the field and left the rest of the graveyard drifting where it fell. "
-            "The next ship to come this way will find those same lines of metal still waiting in the dark."
+            "The next survey ship to come this way will find those same lines of metal still waiting in the dark."
         )
     if goals:
         command += " The war was logged as " + goals[0] + "."
     return (
-        f"Our science ship has finished a survey of the wreck field. The hulks still carry marks from {who}.{command} "
-        "Neither navy is here to claim them. The metal is cold, but the line of the battle is still readable "
+        f"Our science ship has completed a survey of the wreck field. The hulks still carry the marks of {who}.{command} "
+        "Neither navy is here to claim the dead. The metal is cold, but the line of the battle is still readable "
         "from the way the wrecks face one another.\\n\\n"
-        "We have stripped what the field will safely give. The alloys and minerals stay in this system "
+        "We have stripped what salvage the field will safely yield. The alloys and minerals will stay in this system "
         "for any station that comes after us."
     )
 
@@ -814,7 +814,7 @@ ship_event = {
         "continuum_battle_desc_aged": _battle_desc((battles or [None])[0], aged=True),
         "continuum_battle_ok": "Strip the field.",
         "continuum_battle_salvage_title": "The Hull Still Answers",
-        "continuum_battle_salvage_desc": "The wreck's transponder accepted a new owner. One hull is intact enough to bring home. It will not take a refit, and it does not count against the naval limit.",
+        "continuum_battle_salvage_desc": "The wreck's transponder accepted a new owner. One corvette is intact enough to bring home. It will not take a refit, and it does not count against the naval limit.",
         "continuum_battle_salvage_ok": "Bring the hull home.",
         "CONTINUUM_BATTLE_SALVAGE": "Salvage the Derelict",
         "CONTINUUM_BATTLE_SALVAGE_DESC": "A dead hull from the battle still holds together. A science ship can bring it in.",

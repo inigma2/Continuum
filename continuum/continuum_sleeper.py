@@ -115,30 +115,30 @@ def write_files(mod_root, loc, plan):
         if voice == "march":
             loc[f"continuum_sleeper_{i}_site"] = "The Empty March"
             loc[f"continuum_sleeper_{i}_site_desc"] = (
-                f"From orbit the capital of {name} reads as a fortress that outlived its garrison. "
-                "Every gun-mount our scientists can resolve was laid on the lanes, not on the palace, "
+                f"From high orbit, the capital of {name} reads as a fortress that outlived its garrison. "
+                "Every gun mount our scientists can resolve was laid on the lanes, not aimed inward at the palace, "
                 "and the barracks still outnumber the archives.\\n\\n"
-                "Guest quarters that can still be picked out from orbit are broken open, and nothing on the scan "
-                "suggests the empire welcomed a neighbor inside the walls. "
+                "The guest quarters that can still be picked out from orbit are broken open, and nothing on the scan "
+                "suggests this empire ever welcomed a neighbor inside its walls. "
                 "The excavation will begin in the fused armor of the capital itself."
             )
             chapters = [
                 ("Guns Trained on the Lane",
-                 "Our scientists cut into the capital along a trench of fused armor. The walls had faced outward. "
-                 "On the inner face the team logged plated warnings, repeated in several dead scripts, that ordered foreign hulls to turn back or burn.\\n\\n"
-                 f"The empire of {name} had built this world as a gate and had lived behind it. What remains are cells, ranges, and a parade ground vitrified by its own last volley."),
+                 "Our scientists have cut into the capital along a trench of fused armor. The walls faced outward. "
+                 "On the inner face, the team logged plated warnings, repeated in several dead scripts, that ordered foreign hulls to turn back or burn.\\n\\n"
+                 f"The empire of {name} built this world as a gate and lived behind it. What remains are holding cells, firing ranges, and a parade ground vitrified by its own last volley."),
                 ("Ranges Aimed at Empty Space",
-                 "The second trench opened a firing range whose targets were painted star-charts. The charts showed neighboring systems, each marked as forbidden. "
+                 "The second trench opened a firing range whose targets were painted star charts. The charts showed neighboring systems, each marked as forbidden. "
                  "No round in the racks had been fired at those paintings. The guns had been saved for real hulls.\\n\\n"
                  "Duty slates name captains who held the range after the outer forts went silent. The last slate is a bearing and a hold order. They died waiting for an enemy that had already won."),
                 ("The Armory That Stayed Shut",
-                 "In the deepest vault the excavation found an armory door still sealed. Our scientists tested the seam. It did not yield. "
+                 "In the deepest vault, the excavation found an armory door that was still sealed. Our scientists tested the seam. It did not yield. "
                  "A plaque in the lintel came free. It named this capital and charged the garrison to keep the armory shut.\\n\\n"
                  f"The empire of {name} ended as a closed fortress. The plaque is ours. The armory stays shut."),
             ]
             clues = [
                 ("Warning Buoy on a Closed Lane",
-                 f"Our scientists boarded a buoy that still repeated a warning in a dead script. The message named {name} and ordered traffic to turn back. "
+                 f"Our scientists boarded a buoy that still repeats a warning in a dead script. The message names {name} and orders traffic to turn back. "
                  "The buoy's return channel still carried a spectral type and a bearing for the capital."),
                 ("Hulks at a Forbidden Star",
                  f"A field of hulks shared one transponder prefix. The ships had been turned away from a single star and had died on that heading. "
@@ -147,34 +147,34 @@ def write_files(mod_root, loc, plan):
         else:
             loc[f"continuum_sleeper_{i}_site"] = "The Closed Catalog"
             loc[f"continuum_sleeper_{i}_site_desc"] = (
-                f"From high orbit the capital of {name} is a muted disk under a broken ring of stations. "
-                "The ring was a gallery of docks and reading-halls, and our scientists can still trace the tram-lines between dark museum shells. "
-                "Cities on the night side keep their street grids, but no light answers.\\n\\n"
-                "The empire treated the galaxy as a collection and this world as the drawer that held it. "
+                f"From high orbit, the capital of {name} is a muted disk under a broken ring of stations. "
+                "The ring was a gallery of docks and reading halls, and our scientists can still trace the tram lines between the dark museum shells. "
+                "The cities on the night side keep their street grids, but no light answers.\\n\\n"
+                "The empire treated the galaxy as a collection, and this world as the drawer that held it. "
                 "The excavation will begin in the capital itself."
             )
             chapters = [
                 ("The Fallen Reading Hall",
                  f"Our scientists opened the first trench in a hall that had fallen from the orbital ring onto the capital of {name}. "
-                 "Shelving ran for kilometers in a metal that had tired rather than rusted. Labels survived in a script the excavation can scan but not yet speak.\\n\\n"
-                 "The shelves had held star-charts, grammars, and sealed copies of laws. The arrangement was a filing system, not a shrine. "
-                 "The empire had been vast enough to gather and careful enough to catalog. It had not been careful enough to last."),
+                 "Shelving ran for kilometers in a metal that had grown tired rather than rusted. Labels survived in a script the excavation can scan but cannot yet speak.\\n\\n"
+                 "The shelves had held star charts, grammars, and sealed copies of laws. The arrangement was a filing system, not a shrine. "
+                 "The empire had been vast enough to gather this, and careful enough to catalog it. It had not been careful enough to last."),
                 ("Rosters That Never Signed Out",
                  "A service tunnel led from the fallen hall into the lower stacks. Duty rosters still hung on the walls. "
-                 "The last names had signed in and had not signed out. Ration marks showed a staff that kept working after the docks above them went quiet.\\n\\n"
-                 "The excavation recovered a maintenance log, not a battle plan. Entries grew shorter. The final line was a shelf number, not a farewell."),
+                 "The last names had signed in and had never signed out. Ration marks showed a staff that kept working after the docks above them went quiet.\\n\\n"
+                 "The excavation recovered a maintenance log, not a battle plan. The entries grew shorter. The final line was a shelf number, not a farewell."),
                 ("The Seal on the Last Drawer",
-                 f"In the deepest vault the excavation found the archive the upper halls had only indexed. The door was one slab, marked with the catalog number of {name}, "
+                 f"In the deepest vault, the excavation found the archive the upper halls had only indexed. The door was one slab, marked with the catalog number of {name}, "
                  "as if the rulers had filed themselves. Our scientists tested the seam. It did not yield.\\n\\n"
                  "A plaque in the lintel came free. It carried a star-fix for this capital and a charge to keep the record and not to spend it. "
                  "The plaque is a relic of that charge. The archive stayed sealed."),
             ]
             clues = [
                 ("A Chart Left in a Dead Relay",
-                 f"Our scientists boarded a dead relay off the lane. Inside, a chart cabinet held a loan record. The station had borrowed star-maps from {name} and had never sent them home. "
-                 "The maps were ash. The return address was not. A bearing and a catalog number for the capital ring survived in the frame."),
+                 f"Our scientists boarded a dead relay off the lane. Inside, a chart cabinet held a loan record. The station had borrowed star maps from {name} and never sent them home. "
+                 "The maps are ash. The return address is not. A bearing and a catalog number for the capital ring survived in the frame."),
                 ("A Copy That Named Its Source",
-                 f"A ruined colony had streets numbered like volumes in a library. In the civic pit our scientists found a cracked copy of a star catalog. "
+                 "A ruined colony had streets numbered like volumes in a library. In the civic pit our scientists found a cracked copy of a star catalog. "
                  f"A credit line under the break named {name} and the ring where the original was kept. The entries were gone. The credit was enough."),
             ]
         for n, (title, body) in enumerate(chapters, 1):

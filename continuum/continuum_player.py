@@ -138,19 +138,19 @@ def _set_shared_loc(loc_entries):
     loc_entries["continuum_intro_title_aged"] = "Continuum Aged"
     loc_entries["continuum_intro_ok"] = "Begin"
     loc_entries["continuum_intro_present"] = _welcome(
-        "Only a few years have passed. The old empires still hold their space. "
+        "Only a few years have passed since the archives were last updated. The old empires still hold their space. "
         "You are a new political entity in their galaxy - not their heir."
     )
     loc_entries["continuum_intro_new"] = _welcome(
-        "Your people have reached FTL. The other empires still occupy their cores. "
+        "Your people have reached FTL. The older empires still occupy their cores. "
         "The gaps between them are yours to claim."
     )
     loc_entries["continuum_intro_border"] = _welcome(
-        "You rise on a frontier between the old empires. They still exist. "
+        "You have risen on a frontier between the old empires. They still exist. "
         "You are a new state on their doorstep."
     )
     loc_entries["continuum_intro_primitive"] = _welcome(
-        "Your world was pre-FTL. You have reached the stars. "
+        "Your homeworld was pre-FTL. You have reached the stars. "
         "The empires that mapped this sky still exist. You do not serve them."
     )
     loc_entries["continuum_intro_crisis"] = _welcome(
@@ -162,9 +162,9 @@ def _set_shared_loc(loc_entries):
         "You are a new empire under the same banner - not their heir. You keep your name."
     )
     loc_entries["continuum_intro_aged"] = _welcome(
-        "It has been thousands of years since the oldest maps of them were drawn by the ancients of your people. "
-        "Whatever your history, your future begins now as you have finally acquired the means to travel the stars. "
-        "You have many questions but feel the answers are to be found somewhere, out there, among the stars."
+        "It has been thousands of years since the oldest star maps were drawn by the ancestors of your people. "
+        "Whatever your history, your future begins now, as you have acquired the means to travel the stars. "
+        "You have many questions, and the answers are waiting somewhere out there, among the stars."
     )
     loc_entries["continuum_intro_aged_copy"] = loc_entries["continuum_intro_aged"]
 

@@ -120,7 +120,7 @@ def _end(emp, body, battle):
     bits = [b for b in (grave, battle) if b]
     if not bits:
         return (
-            "The later charts have no heir for this empire and no recorded cause. "
+            "The later charts list no heir for this empire and give no recorded cause for the silence. "
             "The transponder stops."
         )
     tail = " The later charts name no cause beyond that. The transponder stops."
